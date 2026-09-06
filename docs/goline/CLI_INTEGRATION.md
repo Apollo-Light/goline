@@ -93,7 +93,9 @@ agents work from accurate, scoped state rather than guesses:
 - **Engine pack** (`--context engine`): repo root, git branch/commit/clean
   state, engine markers, tools detected on PATH, key dirs present, the
   `version.py` identity (name/short_name/major/minor/patch), and Goline handoff
-  docs.
+  docs. `git_clean` is reported truthfully: `yes`/`no` only when git answers,
+  `unknown` when git is unavailable (it never claims a clean tree it could not
+  check).
 - **Game pack** (`--context game --project <dir>`): requires `project.godot`;
   surfaces project name, `config_version`, main scene, and a bounded (≤60
   files, ≤4 deep) listing of `.gd`/`.cs`/`.tscn`/`.tres` files.
@@ -131,14 +133,22 @@ in-editor launcher.
     `dd`/`Remove-Item`/`clear-*`/`format`/`wipefs`), `sudo`, dangerous `git`
     (`reset`/`clean`/`rebase`/`merge`/`prune`/`gc`, `checkout --`, `rm`,
     `stash drop`/`clear`, `branch`/`tag -d`, and *any* force push including
-    `--force`/`-f`/`+refspec`), shell redirections, remote-code install
-    pipelines (`curl|wget|iwr … | sh|bash|python|node|iex`), system/power
-    mutation (`shutdown`/`reboot`/`init 0`/`Stop-Computer`), process killing
-    (`kill -9`/`taskkill /f`/`Stop-Process -Force`), low-level storage tools
-    (`fdisk`/`parted`/`mkfs`/`cryptsetup`), registry deletes, and any
-    **unrecognized executable** (default-deny).
+    `--force`/`-f`/`+refspec`), shell redirection to a file (`echo hi > x`,
+    `python y > out.txt`), remote-code install pipelines (`curl|wget|iwr … |
+    sh|bash|python|node|iex`), system/power mutation (`shutdown`/`reboot`/
+    `init 0`/`Stop-Computer`), process killing (`kill -9`/`taskkill /f`/
+    `Stop-Process -Force`), low-level storage tools (`fdisk`/`parted`/`mkfs`/
+    `cryptsetup`), registry deletes, **destructive one-liners from otherwise
+    allow-listed interpreters** (`python -c`/`python -m`/`node -e` with
+    `shutil.rmtree`, `fs.rmSync`/`rmdirSync`/`unlinkSync`, `os.system`,
+    `subprocess`, `pip uninstall`, ...), and any **unrecognized executable**
+    (default-deny).
   - **Allowed:** read-only `git`, the known toolchain (`python`, `node`,
-    `scons`, `cl`/`g++`, ...), and known agent CLIs.
+    `scons`, `cl`/`g++`, ...), known agent CLIs, and harmless file-descriptor
+    redirects (`2>&1`).
+  - Executable tokenization is robust: quoted executables with spaces
+    (`"my tool" x`) are parsed whole, and absolute paths are normalized to
+    their basename so `/usr/bin/rm` still matches the `rm` deny.
   - Callers can add `custom_allow` / `custom_deny` regexes, or set `deny_all`.
 - **Audit log** — `AuditLog` is **append-only**: each decision is a JSONL line
   with a UTC timestamp, decision, reason, and command. A write failure never

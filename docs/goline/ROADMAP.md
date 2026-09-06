@@ -49,9 +49,11 @@ intentional exclusions are in `docs/goline/IDENTITY.md`.
   suite guards `goline/cli/` (`test_context.py` + `test_goline_cli.py`, 22
   tests). This implements the ARCHITECTURE §5 "Project Context System" for the
   CLI path.
-- **Still to define:** safety boundaries and a permission/audit model for agent
-  actions (ARCHITECTURE §8/§9); deeper architecture doc refresh to match the
-  external-CLI-only decision.
+- **Done (permission/audit model, ARCHITECTURE §8/§9):** the safety boundary is
+  `goline/cli/policy.py` and both context packs are truthful about repo state —
+  e.g. `git_clean` reports `unknown` (not `yes`) when git is unavailable. Packs
+  are grounded and scam-free: depth/count-bounded scans, no filesystem writes,
+  every git/tool probe fails closed.
 
 ## Stage 4 — OpenCode integration — PARTIAL
 
@@ -104,17 +106,21 @@ intentional exclusions are in `docs/goline/IDENTITY.md`.
 ## Stage 8 — Agent tools and permissions — PARTIAL
 
 - **Done (permission/audit gate, ARCHITECTURE §8/§9):** `goline/cli/policy.py` —
-  pure command **classification** (default deny-destructive: `rm`/`del`/`rd`/
-  `shred`/`dd`/`Remove-Item`/`format`/`wipefs`, `sudo`, dangerous `git` incl.
-  force-push in every form and branch/tag/stash/rm/prune/gc, `curl|wget|… | sh`
-  supply-chain pipelines, shutdown/reboot/init, `kill -9`/`taskkill /f`, storage
-  tools `fdisk`/`parted`/`mkfs`, registry deletes, and unknown executables;
-  allow read-only `git` + known toolchain) and an **append-only JSONL audit log**.
-  Exposed as `--gate "command"` (never executes; exit 0 allow / 1 deny) with
-  optional `--audit <path>`, and wired as a post-dispatch audit hook on
-  `--handover`. Offline-tested (59 tests).
-- **Still ahead:** enforcing the gate inside the launch path (agents holding
-  the policy as an instruction), a richer rule file, and review/approval UX.
+  pure command **classification** (default deny-destructive) and an
+  **append-only JSONL audit log**. The deny set covers file/filesystem
+  destruction, low-level storage, system/power mutation, force process-kill,
+  dangerous `git` (incl. force-push in every form), supply-chain pipelines
+  (`curl|… | sh`), shell redirection to a file, and **destructive one-liners
+  from otherwise allow-listed interpreters** (`python -c` / `node -e` with
+  `shutil.rmtree`, `fs.rmSync`, `os.system`, `pip uninstall`, ...), while
+  harmless `2>&1` descriptor redirects and normal script runs stay allowed.
+  Executables are tokenised robustly (quoted names with spaces, absolute
+  paths normalized to basename). Exposed as `--gate "command"` (never
+  executes) with optional `--audit <path>`, and wired as a post-dispatch
+  audit hook (`--audit`) plus a **fail-fast `--guard`** (exit 2) on
+  `--handover`. Offline-tested (74 tests).
+- **Still ahead:** an interactive review/approval UX for the "ask" bucket
+  (commands that are neither auto-deny nor auto-allow).
 
 ## Stage 9 — Testing, performance and polish — NOT IMPLEMENTED
 

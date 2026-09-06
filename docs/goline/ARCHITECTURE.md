@@ -83,7 +83,9 @@ Infrastructure for AI agents to act on the repository.
 - Commands are invoked only within defined permissions.
 
 *Status: CLI foundation.* Goline shells out via `goline/cli/goline_cli.py`
-(discovery + launch); the permission gate is `goline/cli/policy.py`.
+(discovery + launch); the permission gate is `goline/cli/policy.py`. On
+`--handover` the gate is enforced with `--guard` (fail-fast, exit 2 on a
+denied command the agent emits).
 
 ## 9. Security and Permission Controls
 
@@ -95,8 +97,11 @@ The governance layer for all agent actions.
 
 *Status: CLI foundation.* `Policy.classify()` gives allow/deny/error with a
 reason (default deny-destructive); `AuditLog` is an append-only JSONL trail.
-Gating is currently an inspection step (`--gate`) and is not yet enforced
-inline inside the agent launch prompt.
+The deny set is hardened against interpreter one-liners (`python -c`/`node -e`
+destruction), file redirection (`echo > x`), and path/quote tokenization
+pitfalls; `2>&1` descriptor redirects stay allowed. Gating is enforced at
+handover time via `--guard` (exit 2 on a denied agent command), in addition
+to the inspection step (`--gate`) and the `--audit` JSONL hook.
 
 ---
 
