@@ -128,7 +128,7 @@ in-editor launcher.
 `goline/cli/policy.py` is a pure (never-executes) decision layer:
 
 - **Classification** — `Policy.classify(command)` returns `allow`/`deny`/
-  `error` with a reason. Default posture is **deny-destructive**:
+  `ask`/`error` with a reason. Default posture is **deny-destructive**:
   - **Denied:** file/filesystem destruction (`rm`/`del`/`rd`/`rmdir`/`shred`/
     `dd`/`Remove-Item`/`clear-*`/`format`/`wipefs`), `sudo`, dangerous `git`
     (`reset`/`clean`/`rebase`/`merge`/`prune`/`gc`, `checkout --`, `rm`,
@@ -142,20 +142,53 @@ in-editor launcher.
     allow-listed interpreters** (`python -c`/`python -m`/`node -e` with
     `shutil.rmtree`, `fs.rmSync`/`rmdirSync`/`unlinkSync`, `os.system`,
     `subprocess`, `pip uninstall`, ...), and any **unrecognized executable**
-    (default-deny).
+    (default-deny). Deny always wins over the review bucket, so the
+    destructive variants (force push, `branch -d`, `stash drop`, …) never
+    degrade to an ask.
   - **Allowed:** read-only `git`, the known toolchain (`python`, `node`,
     `scons`, `cl`/`g++`, ...), known agent CLIs, and harmless file-descriptor
     redirects (`2>&1`).
+  - **Ask (review bucket):** mutating-but-recoverable commands are *neither*
+    auto-allowed *nor* auto-denied — `Policy` returns `ask` and the human
+    decides. Bucket contents: non-destructive `git` mutations
+    (`git add`/`commit`/`push`/`stash`/`restore`, `git branch`/`git tag`
+    with a name; bare `git branch`/`git tag` list refs and stay allowed) and
+    package-manager installs (`pip`/`python -m pip`/`npm`/`pnpm`/`yarn`/
+    `brew install`). The same rules are crisped into the grounded-context
+    guidance notice so agents know to ask before running them.
   - Executable tokenization is robust: quoted executables with spaces
     (`"my tool" x`) are parsed whole, and absolute paths are normalized to
     their basename so `/usr/bin/rm` still matches the `rm` deny.
-  - Callers can add `custom_allow` / `custom_deny` regexes, or set `deny_all`.
+  - Callers can add `custom_allow` / `custom_deny` / `custom_ask` regexes, or
+    set `deny_all`.
 - **Audit log** — `AuditLog` is **append-only**: each decision is a JSONL line
-  with a UTC timestamp, decision, reason, and command. A write failure never
-  crashes the caller.
+  with a UTC timestamp, decision, reason, and command; policy verdicts carry
+  `"decided_by": "policy"`. A write failure never crashes the caller.
+- **Approval log** — `ApprovalLog` (same append-only JSONL format) records
+  **human** decisions with `"decided_by": "human"` plus `"human_decision":
+  "approve"|"block"`, so machine verdicts and human overrides share one trail
+  and are never confused.
 
 CLI: `--gate "command"` classifies a command (does **not** run it) and returns
-0 on allow / 1 on deny; `--audit <path>` appends the decision to a JSONL file.
+0 on allow / 1 on deny / 2 on ask; `--audit <path>` appends the decision to a
+JSONL file.
+
+**Review / approval UX** (`--review`, `--approval-file`): because headless
+dispatch records agent commands *after* the subprocess exits, review is
+post-dispatch — it never mid-run halts an in-flight agent — but it still gives
+a human veto before a run is treated as done:
+
+- `--handover ... --review` prompts on every `ask`/`deny` the agent emitted
+  (`approve [a]` / `block [b]` / `skip [s]`). A `block` aborts like `--guard`
+  (exit 2); approve/skip continue. Human verdicts append to the `--audit`
+  trail when set; otherwise they stay in memory.
+- `--review <audit.jsonl>` replays a recorded trail offline (no provider),
+  prompting per non-allowed machine record and appending human verdicts back
+  to the same file. Human rows are never re-prompted.
+- `--approval-file <approvals.json>` pre-seeds `{command: "approve"|"block"}`
+  so known-good/bad commands skip the prompt (anything not listed still asks).
+- `--guard` remains the fail-fast: a policy `deny` aborts (exit 2) before any
+  review prompt appears. `--guard` and `--review` compose.
 
 ## T3 Code patterns (adopted via Option A port)
 
@@ -227,12 +260,16 @@ python goline/cli/goline_cli.py --context engine -- "<prompt>"     # engine agen
 python goline/cli/goline_cli.py --context game --project <game> -- "<prompt>"
 python goline/cli/goline_cli.py --gate "git status"                # allow (exit 0)
 python goline/cli/goline_cli.py --gate "rm -rf /tmp" --audit a.jsonl   # deny (exit 1)
+python goline/cli/goline_cli.py --gate "pip install x"            # ask (review, exit 2)
 python goline/cli/goline_cli.py --handover --provider opencode \
     --context engine --model opencode/<model> -- "prompt"          # t3-style handover
 python goline/cli/goline_cli.py --handover --provider opencode \
     --model opencode/<model> --audit handover.jsonl -- "prompt"    # + audit gate
 python goline/cli/goline_cli.py --handover --provider opencode \
     --model opencode/<model> --guard -- "prompt"                 # abort (exit 2) on denied cmd
+python goline/cli/goline_cli.py --handover --provider opencode \
+    --model opencode/<model> --review -- "prompt"   # ask/deny -> human veto; block = exit 2
+python goline/cli/goline_cli.py --review handover.jsonl --approval-file known.json  # offline replay
 ```
 
 ## Tests

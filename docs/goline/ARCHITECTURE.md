@@ -85,7 +85,7 @@ Infrastructure for AI agents to act on the repository.
 *Status: CLI foundation.* Goline shells out via `goline/cli/goline_cli.py`
 (discovery + launch); the permission gate is `goline/cli/policy.py`. On
 `--handover` the gate is enforced with `--guard` (fail-fast, exit 2 on a
-denied command the agent emits).
+denied command the agent emits) and `--review` (human veto on ask/deny).
 
 ## 9. Security and Permission Controls
 
@@ -95,13 +95,20 @@ The governance layer for all agent actions.
 - Restriction of destructive or out-of-scope operations.
 - Audit trail and review of agent-driven changes.
 
-*Status: CLI foundation.* `Policy.classify()` gives allow/deny/error with a
-reason (default deny-destructive); `AuditLog` is an append-only JSONL trail.
-The deny set is hardened against interpreter one-liners (`python -c`/`node -e`
-destruction), file redirection (`echo > x`), and path/quote tokenization
-pitfalls; `2>&1` descriptor redirects stay allowed. Gating is enforced at
-handover time via `--guard` (exit 2 on a denied agent command), in addition
-to the inspection step (`--gate`) and the `--audit` JSONL hook.
+*Status: CLI foundation.* `Policy.classify()` gives allow/ask/deny/error with
+a reason (default deny-destructive, deny winning over ask). `AuditLog` is an
+append-only JSONL trail of machine verdicts (`decided_by: policy`);
+`ApprovalLog` shares the format for human verdicts (`decided_by: human`,
+`human_decision: approve|block`). The deny set is hardened against
+interpreter one-liners (`python -c`/`node -e` destruction), file redirection
+(`echo > x`), and path/quote tokenization pitfalls; `2>&1` descriptor
+redirects stay allowed. Gating is enforced at handover time via `--guard`
+(exit 2 on a denied agent command), in addition to the inspection step
+(`--gate`: allow/ask/deny → exit 0/2/1) and the `--audit` JSONL hook. The
+`ask` tier (non-destructive `git` mutations, package installs) closes the
+human-in-the-loop: `--handover --review` prompts per non-allowed verdict and
+`--review <audit.jsonl>` replays a trail offline, with `--approval-file`
+pre-seeding known decisions.
 
 ---
 

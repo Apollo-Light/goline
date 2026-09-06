@@ -103,7 +103,7 @@ intentional exclusions are in `docs/goline/IDENTITY.md`.
 - Give AI agents awareness of the project, files, and surrounding context.
 - Provide accurate, scoped context to improve AI assistance quality.
 
-## Stage 8 — Agent tools and permissions — PARTIAL
+## Stage 8 — Agent tools and permissions — DONE
 
 - **Done (permission/audit gate, ARCHITECTURE §8/§9):** `goline/cli/policy.py` —
   pure command **classification** (default deny-destructive) and an
@@ -118,9 +118,19 @@ intentional exclusions are in `docs/goline/IDENTITY.md`.
   paths normalized to basename). Exposed as `--gate "command"` (never
   executes) with optional `--audit <path>`, and wired as a post-dispatch
   audit hook (`--audit`) plus a **fail-fast `--guard`** (exit 2) on
-  `--handover`. Offline-tested (74 tests).
-- **Still ahead:** an interactive review/approval UX for the "ask" bucket
-  (commands that are neither auto-deny nor auto-allow).
+  `--handover`. Offline-tested (107 tests).
+- **Done (review/approval UX):** the three-tier verdict model — `ask` joins
+  `allow`/`deny` for mutating-but-recoverable commands (non-destructive `git`
+  mutations: `add`/`commit`/`push`/`stash`/`restore`, `branch`/`tag` with a
+  name; `pip`/`python -m pip`/`npm`/`pnpm`/`yarn`/`brew install`). `--gate`
+  returns 2 on ask; `--guard` aborts (exit 2) on deny before any prompt; and
+  `--review` (with optional `--approval-file` pre-seed) prompts the human per
+  non-allowed verdict, `block` aborting with exit 2. Human verdicts append to
+  the same JSONL trail as `"decided_by": "human"` via `ApprovalLog`, and
+  `--review <audit.jsonl>` replays a recorded trail offline without
+  re-prompting existing human decisions. Together these close the loop: the
+  machine classifies, refuses hard denials, and asks a human before any
+  agent-run state change is accepted.
 
 ## Stage 9 — Testing, performance and polish — NOT IMPLEMENTED
 
