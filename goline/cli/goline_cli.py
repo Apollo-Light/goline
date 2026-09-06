@@ -17,6 +17,9 @@ Usage:
         --model opencode/gpt-4o --audit handover.jsonl -- "your prompt"
     python goline/cli/goline_cli.py --handover --provider opencode \
         --model opencode/gpt-4o --guard -- "your prompt"  # abort (exit 2) on denied cmd
+    python goline/cli/goline_cli.py --handover --provider opencode \
+        --model opencode/gpt-4o --review [--approval-file a.json] -- "your prompt"
+    python goline/cli/goline_cli.py --review prior-audit.jsonl --approval-file a.json
 """
 
 from __future__ import annotations
@@ -194,14 +197,130 @@ def _audit_agent_events(events, audit) -> None:
 
 def _find_denied_event(events) -> "tuple[object, goline_policy.Decision] | None":
     """Return (event, decision) for the first command the agent emits that the
-    policy would DENY; None if nothing is denied. Used by --guard fail-fast."""
+    policy would DENY; None if nothing is denied. Used by --guard fail-fast.
+    ASK verdicts are NOT an automatic denial -- they go to human review."""
     for ev in events:
         if ev.kind not in ("permission", "tool", "command"):
             continue
         decision = _classify_event_command(ev)
-        if decision is not None and not decision.allowed:
+        if decision is not None and decision.decision == goline_policy.DENY:
             return ev, decision
     return None
+
+
+def _load_preseeded_approvals(path: "str | None") -> "dict[str, str]":
+    """Load a pre-seeded approvals file: a JSON object mapping a command
+    string to an "approve" | "block" human decision. Malformed/unreadable
+    files degrade to an empty map (the review then just prompts)."""
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return {}
+        out = {}
+        for k, v in data.items():
+            if isinstance(k, str) and isinstance(v, str) and v in ("approve", "block"):
+                out[k] = v
+        return out
+    except (OSError, ValueError):
+        return {}
+
+
+def _prompt_approval(decision: "goline_policy.Decision", prompt_fn=input) -> str:
+    """Ask the human for a review decision on a non-allowed command.
+    Returns "approve" | "block" | "skip"."""
+    while True:
+        raw = (
+            prompt_fn(
+                f"[REVIEW] {decision.decision.upper()} command: {decision.command}\n"
+                f"  reason: {decision.reason}\n"
+                "  approve [a] / block [b] / skip [s]: "
+            )
+            or ""
+        ).strip().lower()
+        if raw in ("a", "approve", "y", "yes"):
+            return "approve"
+        if raw in ("b", "block", "n", "no"):
+            return "block"
+        if raw in ("s", "skip", ""):
+            return "skip"
+
+
+def _approve_decisions(
+    decisions,
+    approvals: "goline_policy.ApprovalLog | None",
+    approval_file: "str | None" = None,
+    prompt_fn=input,
+) -> bool:
+    """Review each non-allowed decision: honour a pre-seeded approval for the
+    exact command, otherwise prompt the human. Every decision is recorded on
+    the approvals trail (decided_by=human). Returns True if a human BLOCKED a
+    command (caller should abort), False otherwise."""
+    preseeded = _load_preseeded_approvals(approval_file)
+    blocked = False
+    for decision in decisions:
+        if decision is None or decision.allowed:
+            continue
+        human = preseeded.get(decision.command)
+        if human is None:
+            human = _prompt_approval(decision, prompt_fn)
+        if approvals is not None:
+            approvals.record(decision, human)
+        if human == "approve":
+            print(f"[REVIEW] approved: {decision.command}")
+        elif human == "block":
+            print(f"[REVIEW] blocked: {decision.command}", file=sys.stderr)
+            blocked = True
+            break
+        # "skip" leaves the automated verdict as-is; nothing further.
+    return blocked
+
+
+def _review_events(
+    events,
+    approvals: "goline_policy.ApprovalLog | None",
+    approval_file: "str | None" = None,
+    prompt_fn=input,
+) -> bool:
+    """Review every command-bearing agent event, honouring the pre-seeded
+    approvals and recording human decisions. Returns True if a human blocked
+    a command (caller should abort with exit code 2)."""
+    decisions = [_classify_event_command(ev) for ev in events]
+    return _approve_decisions(
+        decisions, approvals, approval_file=approval_file, prompt_fn=prompt_fn
+    )
+
+
+def _decisions_from_audit(path: str) -> "list[goline_policy.Decision]":
+    """Rehydrate Decisions from an append-only audit/approval JSONL trail,
+    skipping human-verdict rows (they were already decided, not re-received
+    for classification)."""
+    out: "list[goline_policy.Decision]" = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("decided_by") == "human":
+                    continue
+                if not rec.get("command"):
+                    continue
+                out.append(
+                    goline_policy.Decision(
+                        rec.get("decision") or goline_policy.ALLOW,
+                        rec.get("reason") or "replayed from audit",
+                        rec["command"],
+                    )
+                )
+    except OSError:
+        return []
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -242,6 +361,22 @@ def main(argv: list[str] | None = None) -> int:
              "instead of just auditing it",
     )
     parser.add_argument(
+        "--review",
+        nargs="?",
+        const="__handover_review__",
+        metavar="AUDIT_JSONL",
+        help="review non-allowed decisions before or after a run. With "
+             "--handover: prompt on every ASK/DENY the agent emitted and abort "
+             "(exit 2) if you block one. With a path: replay that audit trail "
+             "offline. Human decisions append to the --audit trail.",
+    )
+    parser.add_argument(
+        "--approval-file",
+        metavar="JSON",
+        help="pre-seeded approvals: {command: 'approve'|'block'} consulted "
+             "during review before prompting (commands not listed still prompt)",
+    )
+    parser.add_argument(
         "--handover",
         action="store_true",
         help="dispatch a prompt to a provider with grounded context (t3-style handover)",
@@ -273,7 +408,11 @@ def main(argv: list[str] | None = None) -> int:
             log = goline_policy.AuditLog(args.audit)
             log.record(decision)
             print(f"  audited -> {args.audit}")
-        return 0 if decision.allowed else 1
+        if decision.decision == goline_policy.ALLOW:
+            return 0
+        if decision.decision == goline_policy.ASK:
+            return 2  # review bucket: neither allow nor deny; needs a human
+        return 1
 
     # Print a context pack and stop (no agent launched, no temp file).
     if args.print_context:
@@ -283,6 +422,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: {e}", file=sys.stderr)
             return 1
         print(pack)
+        return 0
+
+    # Offline replay: review a previously-recorded audit/approval trail
+    # without re-dispatching an agent. Blocking aborts with exit code 2.
+    if args.review is not None and args.review != "__handover_review__":
+        decisions = _decisions_from_audit(args.review)
+        trail = goline_policy.ApprovalLog(args.review)
+        blocked = _approve_decisions(
+            decisions,
+            trail,
+            approval_file=args.approval_file,
+        )
+        print(f"[review] {len(decisions)} non-policy decision point(s) replayed")
+        if blocked:
+            print("[review] a command was blocked (exit 2)", file=sys.stderr)
+            return 2
         return 0
 
     # Handover: dispatch a prompt to a provider with grounded context.
@@ -327,6 +482,20 @@ def main(argv: list[str] | None = None) -> int:
                 _ev, decision = denied
                 print(f"[GUARD] DENY aborted: {decision.command}", file=sys.stderr)
                 print(f"  reason: {decision.reason}", file=sys.stderr)
+                return 2
+
+        # --review: human review of every ASK/DENY the agent emitted. A block
+        # behaves like --guard (exit 2); approve/skip continue. Human verdicts
+        # append to the same trail as the policy verdicts when --audit is set.
+        if args.review == "__handover_review__":
+            approvals = goline_policy.ApprovalLog(args.audit) if args.audit else None
+            blocked = _review_events(
+                result.events,
+                approvals,
+                approval_file=args.approval_file,
+            )
+            if blocked:
+                print("[REVIEW] a command was blocked (exit 2)", file=sys.stderr)
                 return 2
 
         for ev in result.events:

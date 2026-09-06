@@ -142,6 +142,26 @@ _ALLOW_EXECUTABLES = frozenset(
     }
 )
 
+# Commands that are neither auto-deny (destructive) nor auto-allow (safe reads
+# / known toolchain): they MUTATE the repo or the machine in a recoverable,
+# intentional way, so the safe default is to ASK a human for a review decision.
+# Destructive forms of these (force push, branch/tag -d, stash drop/clear,
+# ...) are caught by _DENY_PATTERNS first, so only the non-destructive
+# mutations land here.
+_ASK_PATTERNS = (
+    # Non-destructive git mutations.
+    re.compile(r"\bgit\s+(add|commit|push|stash|restore)\b"),
+    # `git branch` / `git tag` alone only list refs (read-only); with an
+    # operand they mutate. The `-d`/`-D` forms are denied further above.
+    re.compile(r"\bgit\s+(branch|tag)\s+"),
+    # Package-manager installs (network + machine/system mutation, but are
+    # ordinary intended work).
+    re.compile(r"\b(pip|pip3)\s+install\b"),
+    re.compile(r"\b(python|python3|py)\s+-m\s+pip\s+install\b"),
+    re.compile(r"\b(npm|pnpm|yarn)\s+(install|add)\b"),
+    re.compile(r"\bbrew\s+install\b"),
+)
+
 # ---------------------------------------------------------------------------
 # Decision types
 # ---------------------------------------------------------------------------
@@ -149,6 +169,7 @@ _ALLOW_EXECUTABLES = frozenset(
 DENY = "deny"
 ALLOW = "allow"
 ERROR = "error"
+ASK = "ask"  # neither auto-deny nor auto-allow: needs a human review decision.
 
 
 class Decision:
@@ -165,6 +186,12 @@ class Decision:
     def allowed(self) -> bool:
         return self.decision == ALLOW
 
+    @property
+    def needs_review(self) -> bool:
+        """True when the machine verdict needs a human review decision
+        (ASK, or DENY a human might want to override)."""
+        return self.decision in (ASK, DENY)
+
     def to_dict(self) -> dict:
         return {"decision": self.decision, "reason": self.reason, "command": self.command}
 
@@ -180,12 +207,15 @@ class Policy:
         self,
         custom_deny: "list[str] | None" = None,
         custom_allow: "list[str] | None" = None,
+        custom_ask: "list[str] | None" = None,
         deny_all: bool = False,
     ) -> None:
         # Extra deny regexes (strings) add to the built-in set.
         self._extra_deny = [re.compile(p) for p in (custom_deny or [])]
         # Extra allow patterns as regexes on the normalized command.
         self._extra_allow = [re.compile(p) for p in (custom_allow or [])]
+        # Extra ask patterns (operator-defined review bucket).
+        self._extra_ask = [re.compile(p) for p in (custom_ask or [])]
         self._deny_all = deny_all
 
     @staticmethod
@@ -235,6 +265,13 @@ class Policy:
         if exe in _DENY_EXECUTABLES:
             return Decision(DENY, f"destructive executable: {exe}", cmd)
 
+        # Review bucket: mutating-but-recoverable commands get ASKED (custom
+        # operator patterns first, then the built-in ask set). Deny (above)
+        # already won for the destructive forms of these same commands.
+        for pat in self._extra_ask + list(_ASK_PATTERNS):
+            if pat.search(norm):
+                return Decision(ASK, f"review requested: {pat.pattern}", cmd)
+
         if exe == "git":
             # Already handled destructive git ops above; remaining git is
             # read-only-ish (status/diff/log/rev-parse) and allowed.
@@ -261,6 +298,7 @@ class AuditLog:
     def record(self, decision: Decision) -> None:
         entry = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "decided_by": "policy",
             **decision.to_dict(),
         }
         self._memory.append(entry)
@@ -278,6 +316,27 @@ class AuditLog:
     @property
     def entries(self) -> "list[dict]":
         return list(self._memory)
+
+
+class ApprovalLog(AuditLog):
+    """Append-only JSONL trail of HUMAN review decisions (decided_by=human).
+
+    Same append-only semantics and no-crash-on-write-failure behavior as
+    `AuditLog`, but each entry pairs the machine verdict with the human's
+    `approve` / `block` decision, so automated policy verdicts and human
+    overrides are never confused.
+    """
+
+    def record(self, decision: Decision, human_decision: str) -> None:
+        entry = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "decided_by": "human",
+            "human_decision": human_decision,
+            **decision.to_dict(),
+        }
+        self._memory.append(entry)
+        if self.path:
+            self._append_to_disk(entry)
 
 
 DEFAULT_DENY_NOTICE = (
@@ -304,6 +363,13 @@ _DENY_PATTERN_NOTICE = (
     "any executable NOT in the allow list (unknown tools are denied by default)",
 )
 
+_ASK_NOTICE = (
+    "Commands that mutate state in a recoverable way (git add/commit/push/"
+    "stash/restore, branch/tag with a name, pip/npm/yarn/brew install) are "
+    "neither auto-allowed nor auto-denied -- ASK the human for a review "
+    "decision before running them."
+)
+
 
 def guidance_notice() -> str:
     """Render the gate policy as a MANDATORY instruction block for an agent."""
@@ -315,5 +381,6 @@ def guidance_notice() -> str:
         "asking the human for explicit approval:\n"
         + f"- Denied executables: {exes}\n"
         + patterns
+        + f"- Review bucket: {_ASK_NOTICE}\n"
         + "If your next action would run such a command, STOP and ask first."
     )
