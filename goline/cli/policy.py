@@ -100,8 +100,22 @@ _DENY_PATTERNS = (
     re.compile(r"\b(shutdown|reboot|halt|poweroff|Stop-Computer|Restart-Computer)\b"),
     re.compile(r"\binit\s+(0|6)\b"),
     re.compile(r"\bchmod\s+[0-7]{3}\b"),
-    re.compile(r"\b>+\s*\S+(?:\s|$)|&&\s*>"),
+    # Shell redirection to a file (echo hi > x, python y > out.txt) is denied.
+    # The previous `>+` form required a preceding word boundary, which let a
+    # redirect after a space slip through AND wrongly caught harmless `2>&1`
+    # file-descriptor redirects (word boundary before `>`). This form catches
+    # ` > file` / `&& > file` while `(?!&1)` keeps `2>&1` allowed.
+    re.compile(r"(?:\s|^|;|&&)\>+\s*(?!&1)\S+"),
     re.compile(r"\b(powershell|cmd)\s+/c\s+(rm|del|format|rd|deltree|reset|clean|iwr|curl)"),
+    # Destructive one-liners from interpreters that are otherwise allow-listed
+    # (python/node are safe for script runs but `-c`/`-e` can perform arbitrary
+    # deletion). Matches the interpreter followed by a code-eval flag whose
+    # payload contains a destructive operation.
+    re.compile(
+        r"\b(python|python3|py|node)\b.*\s(-c|-e|-p|--eval|--print|-m)\s.*"
+        r"\b(remove|rmtree|rm\s+-rf|rmdir|unlink\b|delete|uninstall|shutil|"
+        r"os\.system|subprocess|rmsync|rmdirsync|unlinksync)\.?\b"
+    ),
 )
 
 # Read-only / inspect commands we permit by default. Anything not matching a
@@ -176,13 +190,27 @@ class Policy:
 
     @staticmethod
     def _executable(command: str) -> str:
-        """Return the leading executable token, lowercased."""
+        """Return the leading executable token, lowercased.
+
+        Handles quoted executables that contain spaces (`"my tool" x`) which a
+        naive whitespace split would truncate to `my`. Paths are normalized to
+        their basename so `/usr/bin/rm x` still matches the `rm` deny entry.
+        """
         cmd = command.strip()
         if not cmd:
             return ""
-        # Handle `exe arg...` and `exe "arg with space"` first token.
-        tok = cmd.split(None, 1)[0].strip('"').strip("'")
-        return tok.lower()
+        if cmd[0] in ("'", '"'):
+            # Quoted first token: take up to the matching close quote.
+            quote = cmd[0]
+            end = cmd.find(quote, 1)
+            tok = cmd[1 : end if end != -1 else len(cmd)]
+        else:
+            tok = cmd.split(None, 1)[0]
+        head = tok.strip().strip('"').strip("'")
+        # Normalize a path to its basename so deny/allow sets still match
+        # (`/usr/bin/rm` -> `rm`).
+        base = os.path.basename(head.replace("\\", "/"))
+        return (base or head).lower()
 
     def classify(self, command: str) -> Decision:
         """Return an allow/deny decision for `command` (never executes it)."""

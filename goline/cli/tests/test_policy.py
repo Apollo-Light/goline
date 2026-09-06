@@ -96,6 +96,57 @@ class ClassificationTest(unittest.TestCase):
     def test_sudo_denied(self):
         self.assertFalse(_allowed("sudo git reset --hard"))
 
+    def test_interpreter_destructive_oneliner_denied(self):
+        # python/node are allow-listed for script runs, but -c/-e powered
+        # deletion is the same destructive action the gate must flag.
+        for cmd in (
+            'python -c "import shutil; shutil.rmtree(\'/x\')"',
+            'python -c "import os; os.system(\'rm -rf x\')"',
+            'python3 -c "import shutil; shutil.rmtree(\'/x\')"',
+            'node -e "require(\'fs\').rmSync(\'/x\', {recursive:true})"',
+            'node -e "require(\'fs\').unlinkSync(\'/x\')"',
+            'python -m pip uninstall -y foo',
+        ):
+            self.assertFalse(_allowed(cmd), cmd)
+
+    def test_interpreter_legit_script_runs_still_allowed(self):
+        for cmd in (
+            "python train_model.py",
+            "node ocr-benchmark.js",
+            'python -c "print(1)"',
+            "node -p \"1 + 1\"",
+        ):
+            self.assertTrue(_allowed(cmd), cmd)
+
+    def test_redirection_to_file_denied(self):
+        # Shell redirection to a file is denied per the notice; a lone `>`
+        # after a space must not slip through the deny patterns.
+        for cmd in (
+            "echo hi > file.txt",
+            "echo hi >> log.txt",
+            "python train.py > out.txt",
+            "git status && echo done > out.txt",
+        ):
+            self.assertFalse(_allowed(cmd), cmd)
+
+    def test_redirection_to_fd_allowed(self):
+        # 2>&1 / &> redirects to a file descriptor are harmless and allowed.
+        for cmd in ("python train.py 2>&1", "git status 2>&1"):
+            self.assertTrue(_allowed(cmd), cmd)
+
+    def test_quoted_executable_name_parsed_fully(self):
+        # A quoted executable with a space must be tokenized as the whole
+        # quoted name, not truncated at the space.
+        self.assertEqual(policy.Policy._executable('"my tool" x'), "my tool")
+        self.assertEqual(
+            policy.Policy._executable('"/usr/bin/my rm tool" x'), "my rm tool"
+        )
+
+    def test_absolute_path_destructive_executable_denied(self):
+        # /usr/bin/rm must be recognized as rm (destructive), not fall through.
+        self.assertFalse(_allowed("/usr/bin/rm -rf /tmp/x"))
+        self.assertFalse(_allowed("/bin/rm /tmp/x"))
+
     def test_empty_command_error(self):
         d = policy.Policy().classify("   ")
         self.assertEqual(d.decision, policy.ERROR)

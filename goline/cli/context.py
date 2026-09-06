@@ -94,7 +94,13 @@ def build_engine_context(root: str | None = None, use_git: bool = True) -> str:
         lines.append(f"git_branch: {branch}")
     if commit:
         lines.append(f"git_commit: {commit}")
-    lines.append(f"git_clean: {'yes' if clean is None else 'no'}")
+    # Only claim "clean" when git actually answered; when git is unavailable
+    # (no branch and no commit) `clean is None` means "couldn't check", not a
+    # clean tree.
+    if use_git and (branch is not None or commit is not None):
+        lines.append(f"git_clean: {'yes' if clean is None else 'no'}")
+    else:
+        lines.append("git_clean: unknown")
 
     present = [m for m in _ENGINE_MARKERS if os.path.exists(os.path.join(root, m))]
     lines.append(f"engine_markers: {', '.join(present) or 'none'}")
