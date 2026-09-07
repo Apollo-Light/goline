@@ -210,12 +210,15 @@ class Policy:
         custom_ask: "list[str] | None" = None,
         deny_all: bool = False,
     ) -> None:
-        # Extra deny regexes (strings) add to the built-in set.
-        self._extra_deny = [re.compile(p) for p in (custom_deny or [])]
-        # Extra allow patterns as regexes on the normalized command.
-        self._extra_allow = [re.compile(p) for p in (custom_allow or [])]
-        # Extra ask patterns (operator-defined review bucket).
-        self._extra_ask = [re.compile(p) for p in (custom_ask or [])]
+        # Extra rule regexes (strings) compiled once at construction. The
+        # combined deny/ask tuples are precomputed too, so `classify` never
+        # reallocates a fresh list per call (hot path, called per agent event
+        # and per `--gate`).
+        self._extra_deny = tuple(re.compile(p) for p in (custom_deny or []))
+        self._extra_allow = tuple(re.compile(p) for p in (custom_allow or []))
+        self._extra_ask = tuple(re.compile(p) for p in (custom_ask or []))
+        self._deny_pats = self._extra_deny + _DENY_PATTERNS
+        self._ask_pats = self._extra_ask + _ASK_PATTERNS
         self._deny_all = deny_all
 
     @staticmethod
@@ -258,7 +261,7 @@ class Policy:
             return Decision(ALLOW, "explicit allow rule matched", cmd)
 
         # Check caller-provided deny rules, then built-in deny pattern set.
-        for pat in self._extra_deny + list(_DENY_PATTERNS):
+        for pat in self._deny_pats:
             if pat.search(norm):
                 return Decision(DENY, f"deny pattern: {pat.pattern}", cmd)
 
@@ -268,7 +271,7 @@ class Policy:
         # Review bucket: mutating-but-recoverable commands get ASKED (custom
         # operator patterns first, then the built-in ask set). Deny (above)
         # already won for the destructive forms of these same commands.
-        for pat in self._extra_ask + list(_ASK_PATTERNS):
+        for pat in self._ask_pats:
             if pat.search(norm):
                 return Decision(ASK, f"review requested: {pat.pattern}", cmd)
 
