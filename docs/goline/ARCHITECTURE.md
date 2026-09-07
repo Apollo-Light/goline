@@ -1,10 +1,12 @@
 # Goline — Planned Architecture
 
-> **Status: PARTIALLY IMPLEMENTED (CLI foundation).** The layers below mark
-> their own status; §4, §5, §6, §7, §8, and §9 have a working CLI foundation
-> via `goline/cli/` (pure stdlib, offline-testable). §2 (editor UI) remains
-> planned. No upstream Godot functionality is modified until a roadmap stage
-> authorizes it.
+> **Status: FOUNDATION + CLI IMPLEMENTED; §2 has a stock-binary addon
+> reference.** The layers below mark their own status; §4, §5, §6, §7, §8,
+> and §9 have a working CLI foundation via `goline/cli/` (pure stdlib,
+> offline-testable). §2 (editor UI) has a reference addon
+> (`goline/examples/sample_game/addons/`) that works in a *stock* editor
+> binary; an engine-embedded build remains an optional follow-up. No upstream
+> Godot functionality is modified until a roadmap stage authorizes it.
 
 The architecture organizes Goline into layered, clearly separated areas that
 build on top of the unmodified Godot Engine rather than replacing it.
@@ -30,6 +32,9 @@ The editor-facing surface where Goline-specific UI and workflows appear.
   editor.
 - Goline panels, docks, and toolbars for AI-assisted workflows.
 - Opt-in; upstream editor behavior remains intact.
+- **Reference implementation:** `goline/examples/sample_game/addons/goline_ai/`
+  — a GDScript `EditorPlugin` (stock-binary compatible, no engine build) that
+  adds a **Goline AI** dock driving `goline_cli` (explain/edit/debug).
 
 ## 3. AI Agent Integration Layer
 

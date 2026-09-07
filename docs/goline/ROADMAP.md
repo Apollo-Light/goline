@@ -26,7 +26,7 @@ monogram `icon.svg`). `short_name = "godot"` and the docs URL are intentionally
 unchanged (keep data dirs and working docs links). Full details and the
 intentional exclusions are in `docs/goline/IDENTITY.md`.
 
-## Stage 2 — Goline editor integration — PARTIAL
+## Stage 2 — Goline editor integration — DONE
 
 - **Done (external-CLI model):** the agent-agnostic **CLI orchestration seam** —
   `goline/cli/goline_cli.py` (discovery of installed AI CLIs on `PATH`,
@@ -34,12 +34,20 @@ intentional exclusions are in `docs/goline/IDENTITY.md`.
   handling) plus `docs/goline/CLI_INTEGRATION.md` and a pure test suite
   (`goline/cli/tests/`). No upstream Godot code is touched; nothing needs an
   engine build.
-- **Deferred:** the in-editor dock/toolbar surface (ARCHITECTURE §2) requires
-  compiling an editor build with an EditorPlugin and is deliberately not done
-  until a C++ toolchain exists. The CLI layer is exercised from the developer
-  shell — the primary model for Goline anyway.
+- **Done (in-editor dock on a stock build):**
+  `goline/examples/sample_game/addons/goline_ai/` is a GDScript
+  `EditorPlugin` that adds a **Goline AI** dock to a *stock* Godot editor
+  binary — no C++ toolchain, no engine build. It drives `goline_cli` from a
+  background `OS.execute` thread (Explain file / Edit file / Debug error, CLI
+  auto-detect walking up from `res://`, provider selector, output copy).
+  Loaded in the sample project via `[editor_plugins]
+  enabled=PackedStringArray("goline_ai")` and verified under stock Godot 4.7.2
+  (headless load/unload clean; live `--explain` through the dock's exact argv
+  returns the AI summary). The engine-embedded C++ EditorPlugin variant
+  (ARCHITECTURE §2) remains an optional follow-up once a C++ toolchain exists —
+  the addon route needs none.
 
-## Stage 3 — AI integration architecture — PARTIAL
+## Stage 3 — AI integration architecture — DONE
 
 - **Done (external-CLI reality):** grounded **context packs** in
   `goline/cli/context.py` — engine pack (`--context engine`: repo root, git
@@ -54,6 +62,11 @@ intentional exclusions are in `docs/goline/IDENTITY.md`.
   e.g. `git_clean` reports `unknown` (not `yes`) when git is unavailable. Packs
   are grounded and scam-free: depth/count-bounded scans, no filesystem writes,
   every git/tool probe fails closed.
+- **Done (in-editor surface, stock binary):** the sample project's
+  `addons/goline_ai` dock is the editor-facing end of this architecture — an
+  ARCHITECTURE §2 "Editor Layer" consumer that drives the same `goline_cli`
+  seam the shell uses. The architecture is exercised end-to-end
+  (editor → CLI → ProviderDriver SPI → live model) with no engine build.
 
 ## Stage 4 — OpenCode integration — PARTIAL
 
