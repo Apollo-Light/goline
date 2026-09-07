@@ -3,8 +3,8 @@
 The staged plan for turning the Godot Engine fork into **Goline**, an
 AI-assisted game development engine.
 
-> **Status:** Stages 0, 1, 3, 4 (CLI seams), 5, 7, 8, and 9 are implemented.
-> Stages 2 (in-editor UI) and 6 are deferred/planned. No upstream Godot code
+> **Status:** Stages 0, 1, 3, 4 (CLI seams), 5, 6, 7, 8, and 9 are
+> implemented. Stage 2 (in-editor UI) is deferred. No upstream Godot code
 > is modified before a stage explicitly authorizes it.
 
 ---
@@ -104,11 +104,21 @@ intentional exclusions are in `docs/goline/IDENTITY.md`.
   developer. Part of closing the AI-assisted coding loop. New
   `test_workflows.py` (32 tests) brings the offline suite to **147 tests**.
 
-## Stage 6 — AI-assisted debugging — NOT IMPLEMENTED
+## Stage 6 — AI-assisted debugging — DONE
 
-- Add AI-assisted debugging support.
-- Help diagnose build failures, runtime errors, and regressions with AI
-  assistance while preserving test integrity.
+- **Done (debugging workflow):** `goline/cli/debugging.py` plus the
+  `--debug` command. Feed an error / build failure / backtrace (as an
+  argument or piped stdin) and Goline assembles a bounded **debug context
+  pack** — the raw diagnostics, the most-relevant referenced source file
+  (extracted from the backtrace via `File "..."` / `at ...` / `in ...`
+  markers, Windows (drive-colon) and res:// path forms supported), its git
+  last-change, and the embedded permission policy — then dispatches a
+  root-cause investigation prompt through the provider SPI. The model must
+  diagnose (root cause + ranked likely causes + concrete next steps/tests)
+  and may only sketch fixes as text; it never modifies files. The run goes
+  through the same audit gate/`--guard` as handover. **Inverts the safety
+  posture of `--code`: diagnose-only, never auto-edit.** New
+  `test_debugging.py` (16 tests) brings the offline suite to **163 tests**.
 
 ## Stage 7 — Project/context awareness — DONE
 

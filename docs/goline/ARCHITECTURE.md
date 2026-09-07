@@ -1,10 +1,10 @@
 # Goline — Planned Architecture
 
 > **Status: PARTIALLY IMPLEMENTED (CLI foundation).** The layers below mark
-> their own status; §4, §5, §6, §8, and §9 have a working CLI foundation via
-> `goline/cli/` (pure stdlib, offline-testable). §2 (editor UI) and §7 (AI
-> debugging) remain planned. No upstream Godot functionality is modified until
-> a roadmap stage authorizes it.
+> their own status; §4, §5, §6, §7, §8, and §9 have a working CLI foundation
+> via `goline/cli/` (pure stdlib, offline-testable). §2 (editor UI) remains
+> planned. No upstream Godot functionality is modified until a roadmap stage
+> authorizes it.
 
 The architecture organizes Goline into layered, clearly separated areas that
 build on top of the unmodified Godot Engine rather than replacing it.
@@ -89,6 +89,15 @@ AI-assisted debugging support.
 - Help analyze build failures, runtime errors, and regressions.
 - Surface diagnostics and candidate explanations to the developer.
 - Preserves test integrity; never removes functionality to pass a build.
+
+*Status: CLI foundation.* `--debug "<error/backtrace>"` in
+`goline/cli/debugging.py` builds a bounded debug context pack (raw
+diagnostics + the referenced source file extracted from the backtrace + git
+metadata + permission policy), dispatches a root-cause investigation prompt
+through the provider SPI, and prints a diagnosis. **Diagnose-only by
+design**: the model ranks causes and sketches fixes as text only — it never
+modifies files (the safety mirror of §6's --code). Audit/`--guard` apply as
+in handover; diagnostics can be piped via stdin.
 
 ## 8. Tool/Command Execution
 

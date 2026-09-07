@@ -408,6 +408,15 @@ def main(argv: list[str] | None = None) -> int:
         help="file-scoped explain workflow: assemble context for FILE, dispatch "
              "an explain prompt, and print the result",
     )
+    parser.add_argument(
+        "--debug",
+        nargs="?",
+        const="__debug_stdin__",
+        metavar="DIAGNOSTICS",
+        help="AI-assisted debugging workflow: feed an error / build failure / "
+             "backtrace (argument or piped stdin) plus scoped context to the "
+             "provider and print a diagnosis. Never modifies files.",
+    )
     parser.add_argument("cli_args", nargs="*", help="args passed to the agent")
     args = parser.parse_args(argv)
 
@@ -466,6 +475,26 @@ def main(argv: list[str] | None = None) -> int:
             print("[review] a command was blocked (exit 2)", file=sys.stderr)
             return 2
         return 0
+
+    # AI-assisted debugging workflow (--debug): feed diagnostics + scoped
+    # context to the provider and print a diagnosis. Reads from the argument
+    # or, if piped (no argument), from stdin.
+    if args.debug is not None:
+        from goline.cli.debugging import run_debug_workflow
+        diagnostics = ""
+        if args.debug == "__debug_stdin__":
+            if not sys.stdin.isatty():
+                diagnostics = sys.stdin.read()
+        else:
+            diagnostics = args.debug
+        return run_debug_workflow(
+            diagnostics,
+            provider=args.provider or "opencode",
+            model=args.model,
+            audit_path=args.audit,
+            guard=args.guard,
+            workdir=args.project,
+        )
 
     # File-scoped code workflow (--code / --explain): dispatch through the
     # provider SPI with file-level grounded context, validate, and print.

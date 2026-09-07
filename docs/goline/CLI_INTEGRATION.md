@@ -2,10 +2,10 @@
 
 > **Status:** DESIGN + foundation implemented (additive, no upstream Godot
 > edits). The agent-agnostic orchestration layer, the discovery mechanism,
-> grounded context packs, the permission/audit gate, and the Stage 5+7
-> file-scoped coding workflows are all real and testable. The in-editor UI
-> surface is deferred until an editor build exists (see "Editor surface"
-> below).
+> grounded context packs, the permission/audit gate, the Stage 5+7
+> file-scoped coding workflows, and the Stage 6 debugging workflow are all
+> real and testable. The in-editor UI surface is deferred until an editor
+> build exists (see "Editor surface" below).
 
 ## Why "external CLIs"
 
@@ -133,6 +133,26 @@ package or the file's own dir — never the whole engine tree — with
 file-size/scan-file/scan-byte budgets so it completes fast), one-line git
 last-change metadata, and the embedded MANDATORY permission policy. All
 filesystem access is read-only; nothing writes.
+
+## AI-assisted debugging (Stage 6)
+
+`goline/cli/debugging.py` adds a diagnose-only workflow (the safety mirror of
+`--code`: it never edits files):
+
+- **`--debug "<error / build failure / backtrace>"`** — assembles a **debug
+  context pack** (`build_debug_context`): the bounded raw diagnostics, the
+  most-relevant source file extracted from the backtrace
+  (`_extract_source_path` handles `File "..."`, `at ...`, `in ...` markers,
+  Windows `C:\...` drive-colon paths and `res://`-style paths; only existing
+  files resolve), its bounded content + git last-change, and the embedded
+  permission policy. Dispatches a root-cause investigation prompt through the
+  provider SPI (audit/`--guard` applied like handover) and prints the
+  diagnosis. The model must provide root cause, ranked likely causes,
+  concrete next steps/tests, and may only sketch fixes as text — never
+  modify files.
+- **`--debug` with no argument reads piped stdin** (non-TTY), so piping a log
+  tail works: `Get-Content build.log -Tail 50 | python goline/cli/goline_cli.py --debug`.
+- Diagnostics are capped (8 KB) and there is no auto-edit of any kind.
 
 ## Editor surface (deferred)
 
@@ -303,6 +323,9 @@ python goline/cli/goline_cli.py --print-context file --project <path>   # file-s
 python goline/cli/goline_cli.py --code <file> --instruction "add _ready" \
     --provider opencode [--guard] [--audit a.jsonl]   # code workflow -> diff for review
 python goline/cli/goline_cli.py --explain <file> --provider opencode   # explain workflow
+python goline/cli/goline_cli.py --debug "ERROR: Null access on instance (at player.gd:12)" \
+    --provider opencode          # debugging workflow -> diagnosis (never edits)
+Get-Content build.log -Tail 50 | python goline/cli/goline_cli.py --debug   # pipe diagnostics
 ```
 
 ## Tests
@@ -336,6 +359,8 @@ Measured (author's machine, Python 3.12.10):
   `goline/cli/*.py`, dominated by the bounded cross-file reference scan
   (rooted at the `goline/` package, not the whole engine tree; capped by
   file-size / scan-file / scan-byte budgets) plus one `git log` call.
+- **Debug context pack** (`build_debug_context`) — ~0.2 s on a backtrace
+  referencing `goline/cli/*.py` (one `git log` call; no tree scan).
 - **Handover scan pipeline** (extract + classify a 20-event agent stream +
   record to audit) — ~16 ms per sample batch.
 - **Opencode JSON parsing** — 50 events in ~0.3 ms (`_parse_opencode_events`).
