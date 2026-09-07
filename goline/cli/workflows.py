@@ -233,7 +233,7 @@ def _git_last_change(path: str) -> "str | None":
     try:
         proc = subprocess.run(
             ["git", "log", "-1", "--format=%h %as %an: %s", "--", path],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=5,
             cwd=os.path.dirname(os.path.abspath(path)),
         )
     except (OSError, subprocess.SubprocessError):

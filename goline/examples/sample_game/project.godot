@@ -11,3 +11,7 @@ run/main_scene="res://scenes/Main.tscn"
 
 window/size/viewport_width=1152
 window/size/viewport_height=648
+
+[editor_plugins]
+
+enabled=PackedStringArray("goline_ai")

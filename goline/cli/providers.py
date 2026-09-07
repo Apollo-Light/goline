@@ -143,7 +143,14 @@ def _executable_argv(command: str, args: List[str]) -> List[str]:
 def _default_executor(argv: List[str], cwd: str) -> subprocess_result_proto:
     import subprocess
 
-    return subprocess.run(argv, capture_output=True, text=True, cwd=cwd, timeout=600)
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd,
+        timeout=600,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +347,14 @@ def resolve_git_root(cwd: Optional[str] = None, git_exec=None) -> Optional[str]:
     cwd = os.path.abspath(cwd or os.getcwd())
     cmd = git_exec or ["git", "rev-parse", "--show-toplevel"]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=10)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+            timeout=10,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     out = (proc.stdout or "").strip()

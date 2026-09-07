@@ -30,7 +30,8 @@ def _run(argv: list[str], cwd: str, timeout: int = 5) -> str | None:
         proc = subprocess.run(
             argv,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             cwd=cwd,
         )

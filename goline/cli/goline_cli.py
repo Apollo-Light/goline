@@ -99,7 +99,8 @@ def _probe_version(command: str, version_flag: str) -> str | None:
         proc = subprocess.run(
             argv,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             cwd=os.getcwd(),
         )
