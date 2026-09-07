@@ -3,9 +3,9 @@
 The staged plan for turning the Godot Engine fork into **Goline**, an
 AI-assisted game development engine.
 
-> **Status:** Stage 0 is complete. All later stages are planned but
-> **NOT IMPLEMENTED**. No upstream Godot code is modified before a stage
-> explicitly authorizes it.
+> **Status:** Stages 0, 1, 3, 4 (CLI seams), 5, 7, 8, and 9 are implemented.
+> Stages 2 (in-editor UI) and 6 are deferred/planned. No upstream Godot code
+> is modified before a stage explicitly authorizes it.
 
 ---
 
@@ -87,10 +87,22 @@ intentional exclusions are in `docs/goline/IDENTITY.md`.
   provider's exit 1) instead of just auditing/annotating it. Offline-tested.
 - **Still ahead:** richer event surface (session/thread persistence).
 
-## Stage 5 — AI-assisted coding — NOT IMPLEMENTED
+## Stage 5 — AI-assisted coding — DONE
 
-- Add AI-assisted code/script generation assistance.
-- Generate engine/editor code with human review, following the AI rules.
+- **Done (file-scoped coding workflow):** `goline/cli/workflows.py` plus the
+  `--code FILE --instruction "..."` command. Assembles a **file-scoped
+  context pack** (file content, same-directory siblings, cross-file
+  references, git last-change, permission policy), assembles a strict edit
+  prompt that demands a **unified diff only** (and forbids changes outside
+  the target file, citing `AI_DEVELOPMENT.md` rules), dispatches it through
+  the provider SPI, runs the permission gate/guard on the emitted events,
+  then **validates** the returned diff (empty/huge/no-marker guards). The
+  diff is **printed for human review and applied manually** — never
+  auto-applied. Offline-tested with a mocked provider (exit 0/l/2 paths).
+- **Done (explain workflow):** `--explain FILE` assembles the same context
+  pack and dispatches an explain prompt; the result is printed for the
+  developer. Part of closing the AI-assisted coding loop. New
+  `test_workflows.py` (32 tests) brings the offline suite to **147 tests**.
 
 ## Stage 6 — AI-assisted debugging — NOT IMPLEMENTED
 
@@ -98,10 +110,16 @@ intentional exclusions are in `docs/goline/IDENTITY.md`.
 - Help diagnose build failures, runtime errors, and regressions with AI
   assistance while preserving test integrity.
 
-## Stage 7 — Project/context awareness — NOT IMPLEMENTED
+## Stage 7 — Project/context awareness — DONE
 
-- Give AI agents awareness of the project, files, and surrounding context.
-- Provide accurate, scoped context to improve AI assistance quality.
+- **Done (file-scoped context):** `workflows.build_file_context` gives agents
+  accurate, scoped awareness of a single file: bounded file content
+  (`line_limit`), same-directory siblings, cross-file references discovered
+  by a **bounded** reference scan (limited to the enclosing `goline/` package
+  or file dir — never the whole engine tree — with file-size/scan-file/byte
+  budgets so it runs in <1 s), git last-change metadata, and the embedded
+  MANDATORY permission policy. Exposed via `--context file`, `--print-context
+  file`, and the `--code`/`--explain` workflows.
 
 ## Stage 8 — Agent tools and permissions — DONE
 

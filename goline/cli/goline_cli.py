@@ -334,17 +334,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--context",
-        choices=["engine", "game"],
-        help="assemble a grounded context pack and launch the agent with it",
+        choices=["engine", "game", "file"],
+        help="assemble a grounded context pack and launch the agent with it. "
+             "With 'file': --project is the file path",
     )
     parser.add_argument(
         "--print-context",
-        choices=["engine", "game"],
-        help="assemble and print a context pack without launching an agent",
+        choices=["engine", "game", "file"],
+        help="assemble and print a context pack without launching an agent. "
+             "With 'file': --project is the file path",
     )
     parser.add_argument(
         "--project",
-        help="game project dir (required with --context/--print-context game)",
+        help="game project dir or file path (required with --context/--print-context game or file)",
     )
     parser.add_argument(
         "--gate",
@@ -389,6 +391,23 @@ def main(argv: list[str] | None = None) -> int:
         "--model",
         help="model to use for handover (provider/model for opencode)",
     )
+    parser.add_argument(
+        "--code",
+        metavar="FILE",
+        help="file-scoped coding workflow: assemble context for FILE, dispatch "
+             "an edit instruction, validate the returned diff, and print it "
+             "for human review",
+    )
+    parser.add_argument(
+        "--instruction",
+        help="instruction for --code (what the AI should do to the file)",
+    )
+    parser.add_argument(
+        "--explain",
+        metavar="FILE",
+        help="file-scoped explain workflow: assemble context for FILE, dispatch "
+             "an explain prompt, and print the result",
+    )
     parser.add_argument("cli_args", nargs="*", help="args passed to the agent")
     args = parser.parse_args(argv)
 
@@ -416,11 +435,19 @@ def main(argv: list[str] | None = None) -> int:
 
     # Print a context pack and stop (no agent launched, no temp file).
     if args.print_context:
-        try:
-            pack = goline_context.build_context(args.print_context, args.project)
-        except ValueError as e:
-            print(f"ERROR: {e}", file=sys.stderr)
-            return 1
+        if args.print_context == "file":
+            if not args.project:
+                print("ERROR: --print-context file requires --project <path>",
+                      file=sys.stderr)
+                return 1
+            from goline.cli.workflows import build_file_context
+            pack = build_file_context(args.project)
+        else:
+            try:
+                pack = goline_context.build_context(args.print_context, args.project)
+            except ValueError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
         print(pack)
         return 0
 
@@ -440,6 +467,32 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return 0
 
+    # File-scoped code workflow (--code / --explain): dispatch through the
+    # provider SPI with file-level grounded context, validate, and print.
+    if args.code:
+        from goline.cli.workflows import run_code_workflow
+        if not args.instruction:
+            print("ERROR: --code requires --instruction", file=sys.stderr)
+            return 1
+        return run_code_workflow(
+            args.code,
+            args.instruction,
+            provider=args.provider or "opencode",
+            model=args.model,
+            audit_path=args.audit,
+            guard=args.guard,
+            workdir=args.project,
+        )
+
+    if args.explain:
+        from goline.cli.workflows import run_explain_workflow
+        return run_explain_workflow(
+            args.explain,
+            provider=args.provider or "opencode",
+            model=args.model,
+            workdir=args.project,
+        )
+
     # Handover: dispatch a prompt to a provider with grounded context.
     if args.handover:
         prompt = " ".join(args.cli_args).strip()
@@ -447,14 +500,22 @@ def main(argv: list[str] | None = None) -> int:
             print("ERROR: --handover requires a prompt (after '--')", file=sys.stderr)
             return 1
         context_kind = args.context or "engine"
-        try:
-            pack = goline_context.build_context(context_kind, args.project)
-        except ValueError as e:
-            print(f"ERROR: {e}", file=sys.stderr)
-            return 1
-        if pack.lower().startswith("no game project"):
-            print(f"ERROR: {pack}", file=sys.stderr)
-            return 1
+        if context_kind == "file":
+            if not args.project:
+                print("ERROR: --context file requires --project <file path>",
+                      file=sys.stderr)
+                return 1
+            from goline.cli.workflows import build_file_context
+            pack = build_file_context(args.project)
+        else:
+            try:
+                pack = goline_context.build_context(context_kind, args.project)
+            except ValueError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+            if pack.lower().startswith("no game project"):
+                print(f"ERROR: {pack}", file=sys.stderr)
+                return 1
         provider = args.provider or "opencode"
         try:
             driver = goline_providers.get_driver(provider)
@@ -526,14 +587,22 @@ def main(argv: list[str] | None = None) -> int:
     # Grounded-context mode: write the pack to a temp file and hand the agent
     # a prompt that points at it (plus any caller-provided prompt).
     if args.context:
-        try:
-            pack = goline_context.build_context(args.context, args.project)
-        except ValueError as e:
-            print(f"ERROR: {e}", file=sys.stderr)
-            return 1
-        if pack.lower().startswith("no game project"):
-            print(f"ERROR: {pack}", file=sys.stderr)
-            return 1
+        if args.context == "file":
+            if not args.project:
+                print("ERROR: --context file requires --project <file path>",
+                      file=sys.stderr)
+                return 1
+            from goline.cli.workflows import build_file_context
+            pack = build_file_context(args.project)
+        else:
+            try:
+                pack = goline_context.build_context(args.context, args.project)
+            except ValueError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+            if pack.lower().startswith("no game project"):
+                print(f"ERROR: {pack}", file=sys.stderr)
+                return 1
         fd, path = tempfile.mkstemp(prefix="goline-ctx-", suffix=".txt")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:

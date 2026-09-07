@@ -1,9 +1,10 @@
 # Goline — Planned Architecture
 
-> **Status: PLANNED — NOT IMPLEMENTED.** This document describes the intended
-> target architecture for Goline. None of the layers below are implemented
-> yet, and no upstream Godot functionality is modified until a roadmap stage
-> authorizes it.
+> **Status: PARTIALLY IMPLEMENTED (CLI foundation).** The layers below mark
+> their own status; §4, §5, §6, §8, and §9 have a working CLI foundation via
+> `goline/cli/` (pure stdlib, offline-testable). §2 (editor UI) and §7 (AI
+> debugging) remain planned. No upstream Godot functionality is modified until
+> a roadmap stage authorizes it.
 
 The architecture organizes Goline into layered, clearly separated areas that
 build on top of the unmodified Godot Engine rather than replacing it.
@@ -58,6 +59,14 @@ Provides AI agents with accurate, scoped awareness of the project.
 - Indexes / queries the project to answer "what is here" reliably.
 - Scopes context to the current task to keep prompts accurate.
 
+*Status: CLI foundation.* Level packs live in `goline/cli/context.py` (engine
+`--context engine`, game `--context game --project <dir>`); a file-scoped
+pack lives in `goline/cli/workflows.py` (`build_file_context`, exposed via
+`--context file` / `--print-context file`): bounded file content, same-dir
+siblings, cross-file references via a bounded scan rooted at the enclosing
+`goline/` package (never the whole engine tree), git last-change, and the
+embedded permission policy.
+
 ## 6. Code/Script Assistance
 
 AI-assisted code and script generation for the engine and GDScript/C#.
@@ -65,6 +74,13 @@ AI-assisted code and script generation for the engine and GDScript/C#.
 - Generate and refactor code with human review and validation.
 - Suggestions that integrate with the editor workflow.
 - Follows the AI development rules (small, reviewable, behavioral).
+
+*Status: CLI foundation.* `--code <file> --instruction "..."` in
+`goline/cli/workflows.py` assembles a file-scoped context pack, dispatches a
+strict unified-diff-only edit prompt through the provider SPI, runs the
+permission gate/guard on emitted events, validates the returned diff, and
+prints it for **human review and manual apply** (never auto-applied).
+`--explain <file>` dispatches a file-scoped explain prompt, closing the loop.
 
 ## 7. AI Debugging
 

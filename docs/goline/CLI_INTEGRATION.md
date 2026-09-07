@@ -1,9 +1,11 @@
 # Goline — CLI Agent Integration (Stage 2)
 
 > **Status:** DESIGN + foundation implemented (additive, no upstream Godot
-> edits). The agent-agnostic orchestration layer and the discovery mechanism
-> are real and testable. The in-editor UI surface is deferred until an editor
-> build exists (see "Editor surface" below).
+> edits). The agent-agnostic orchestration layer, the discovery mechanism,
+> grounded context packs, the permission/audit gate, and the Stage 5+7
+> file-scoped coding workflows are all real and testable. The in-editor UI
+> surface is deferred until an editor build exists (see "Editor surface"
+> below).
 
 ## Why "external CLIs"
 
@@ -104,6 +106,33 @@ agents work from accurate, scoped state rather than guesses:
 with a prompt pointing at it (plus any `--` prompt you supply).
 `--print-context <kind>` prints the pack without launching an agent or creating
 a temp file — useful for review and tests.
+
+## File-scoped context & coding workflows (Stage 5+7)
+
+`goline/cli/workflows.py` extends the grounded-packs idea to a **single file**
+and adds two AI-assisted coding entry points:
+
+- **`--code FILE --instruction "..."`** — assembles a file-scoped context
+  pack, builds a strict edit prompt (unified-diff only; forbids touching
+  anything outside the target file; embeds the `AI_DEVELOPMENT.md` rules),
+  dispatches it through the provider SPI, runs the permission gate/guard on
+  the agent's emitted events, then **validates** the returned diff
+  (empty / huge / missing-marker guards in `validate_edit_result`). The diff
+  is printed for **human review and manual apply** — it is never auto-applied.
+  Exit: 0 = diff printed, 2 = blocked by guard or invalid output.
+- **`--explain FILE`** — assembles the same context pack and dispatches an
+  explain prompt, printing the model's explanation of the file's role and
+  integration.
+- **`--context file --project <path>`** / **`--print-context file`** expose
+  the file-scoped pack directly.
+
+**File-scoped context pack** (`workflows.build_file_context`) includes: bounded
+file content (first `line_limit` lines), same-directory sibling names,
+cross-file references (a **bounded** scan rooted at the enclosing `goline/`
+package or the file's own dir — never the whole engine tree — with
+file-size/scan-file/scan-byte budgets so it completes fast), one-line git
+last-change metadata, and the embedded MANDATORY permission policy. All
+filesystem access is read-only; nothing writes.
 
 ## Editor surface (deferred)
 
@@ -270,6 +299,10 @@ python goline/cli/goline_cli.py --handover --provider opencode \
 python goline/cli/goline_cli.py --handover --provider opencode \
     --model opencode/<model> --review -- "prompt"   # ask/deny -> human veto; block = exit 2
 python goline/cli/goline_cli.py --review handover.jsonl --approval-file known.json  # offline replay
+python goline/cli/goline_cli.py --print-context file --project <path>   # file-scoped pack
+python goline/cli/goline_cli.py --code <file> --instruction "add _ready" \
+    --provider opencode [--guard] [--audit a.jsonl]   # code workflow -> diff for review
+python goline/cli/goline_cli.py --explain <file> --provider opencode   # explain workflow
 ```
 
 ## Tests
@@ -299,6 +332,10 @@ Measured (author's machine, Python 3.12.10):
   spawns; a third was eliminated by folding branch+commit into one
   `git log --oneline --decorate` call — see `context._git_rev`).
 - **Game context pack** — sub-millisecond.
+- **File-scoped context pack** (`build_file_context`) — ~0.5 s on
+  `goline/cli/*.py`, dominated by the bounded cross-file reference scan
+  (rooted at the `goline/` package, not the whole engine tree; capped by
+  file-size / scan-file / scan-byte budgets) plus one `git log` call.
 - **Handover scan pipeline** (extract + classify a 20-event agent stream +
   record to audit) — ~16 ms per sample batch.
 - **Opencode JSON parsing** — 50 events in ~0.3 ms (`_parse_opencode_events`).
