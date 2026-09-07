@@ -277,3 +277,32 @@ python goline/cli/goline_cli.py --review handover.jsonl --approval-file known.js
 ```
 python -m unittest discover -s goline/cli/tests -v   # pure, no network
 ```
+
+## Performance (Stage 9)
+
+`goline/cli/benchmarks/benchmark.py` times the real workflows with no
+dependencies and no network:
+
+```
+python -m goline.cli.benchmarks.benchmark [iterations]
+```
+
+Measured (author's machine, Python 3.12.10):
+
+- **Import** — warm in-process reload ~2 ms; cold (`import goline.cli.goline_cli`
+  in a fresh interpreter, minus Python startup) ~89 ms.
+- **`Policy.classify`** — ~18-24 µs/op (~41k-54k ops/s) on a mixed
+  allow/ask/deny corpus; ~0 MB peak allocation (steady state allocates
+  nothing). Achieved by precomputing the deny/ask pattern tuples in
+  `Policy.__init__` instead of rebuilding a combined list on every call.
+- **Engine context pack** — ~150-240 ms p50 (dominated by 2 real `git`
+  spawns; a third was eliminated by folding branch+commit into one
+  `git log --oneline --decorate` call — see `context._git_rev`).
+- **Game context pack** — sub-millisecond.
+- **Handover scan pipeline** (extract + classify a 20-event agent stream +
+  record to audit) — ~16 ms per sample batch.
+- **Opencode JSON parsing** — 50 events in ~0.3 ms (`_parse_opencode_events`).
+
+A determinism test (`test_policy.py::test_classify_is_deterministic`) locks
+`classify` verdicts so the precomputed-pattern optimization cannot change
+behavior.
