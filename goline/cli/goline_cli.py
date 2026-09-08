@@ -20,6 +20,9 @@ Usage:
     python goline/cli/goline_cli.py --handover --provider opencode \
         --model opencode/gpt-4o --review [--approval-file a.json] -- "your prompt"
     python goline/cli/goline_cli.py --review prior-audit.jsonl --approval-file a.json
+    # session/thread persistence: continue the last thread for this project
+    python goline/cli/goline_cli.py --handover --provider opencode \
+        --context engine --continue -- "follow up on the previous task"
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 
 # Make the `goline` package importable when this script is run directly
 # (e.g. `python goline/cli/goline_cli.py`) from the repo root.
@@ -207,6 +211,20 @@ def _find_denied_event(events) -> "tuple[object, goline_policy.Decision] | None"
         if decision is not None and decision.decision == goline_policy.DENY:
             return ev, decision
     return None
+
+
+def _resume_session(path: str, provider: str) -> "str | None":
+    """Return a persisted session id for `provider`, or None.
+
+    Missing/corrupt session files and provider mismatches fail closed (None),
+    so `--continue` degrades to starting a fresh thread instead of crashing.
+    """
+    state = goline_providers.load_session(path)
+    if state is None:
+        return None
+    if state.provider.lower() != (provider or "").lower():
+        return None
+    return state.session_id
 
 
 def _load_preseeded_approvals(path: "str | None") -> "dict[str, str]":
@@ -393,6 +411,19 @@ def main(argv: list[str] | None = None) -> int:
         help="model to use for handover (provider/model for opencode)",
     )
     parser.add_argument(
+        "--session-file",
+        metavar="PATH",
+        help="JSON file persisting the provider session id for --continue "
+             "(default: <workdir>/.goline/session.json)",
+    )
+    parser.add_argument(
+        "--continue",
+        dest="cont",
+        action="store_true",
+        help="on --handover: resume the last session recorded in "
+             "--session-file for this provider instead of starting fresh",
+    )
+    parser.add_argument(
         "--code",
         metavar="FILE",
         help="file-scoped coding workflow: assemble context for FILE, dispatch "
@@ -555,10 +586,41 @@ def main(argv: list[str] | None = None) -> int:
         ctx_path = goline_providers.write_context_file(pack)
         workdir = args.project or os.getcwd()
         audit = goline_policy.AuditLog(args.audit) if args.audit else None
+        session_file = args.session_file or os.path.join(
+            os.path.abspath(workdir), ".goline", "session.json"
+        )
+        session = None
+        if args.cont:
+            session = _resume_session(session_file, provider)
+            if session:
+                print(f"[session] continuing {session} (provider={provider})")
+            else:
+                print(f"[session] no saved {provider} session at {session_file}; "
+                      "starting fresh")
         print(f"[handover] provider={driver.driver_kind} model={args.model or 'default'} "
               f"context={context_kind} cwd={workdir}"
-              + (" audit=" + args.audit if audit else ""))
-        result = driver.dispatch(prompt, ctx_path, model=args.model, workdir=workdir)
+              + (" audit=" + args.audit if audit else "")
+              + (f" session={session}" if session else ""))
+        result = driver.dispatch(
+            prompt, ctx_path, model=args.model, workdir=workdir, session=session
+        )
+
+        # Persist the session id the provider reported so a later --continue
+        # resumes this thread. Failures to write are warnings, not errors.
+        new_session = goline_providers.session_id_from_events(result.events)
+        if new_session:
+            os.makedirs(os.path.dirname(session_file), exist_ok=True)
+            saved = goline_providers.save_session(
+                session_file,
+                goline_providers.SessionState(
+                    provider=provider,
+                    model=args.model or "default",
+                    session_id=new_session,
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            print(f"[session] {'saved' if saved else 'failed to save'} "
+                  f"{new_session} -> {session_file}")
 
         # Post-dispatch audit filter: classify and log command-bearing events
         # the agent emitted (headless dispatch has no live permission prompt,

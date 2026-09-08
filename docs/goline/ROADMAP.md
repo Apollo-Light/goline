@@ -68,7 +68,7 @@ intentional exclusions are in `docs/goline/IDENTITY.md`.
   seam the shell uses. The architecture is exercised end-to-end
   (editor → CLI → ProviderDriver SPI → live model) with no engine build.
 
-## Stage 4 — OpenCode integration — PARTIAL
+## Stage 4 — OpenCode integration — DONE
 
 - **Done:** a **ProviderDriver SPI** and normalized event vocabulary in
   `goline/cli/providers.py`, with concrete **OpenCode** (`opencode run
@@ -98,7 +98,15 @@ intentional exclusions are in `docs/goline/IDENTITY.md`.
 - **Done: `--guard` fail-fast on handover** — if the agent ever emits a command
   the policy denies, the run **aborts with exit code 2** (distinct from the
   provider's exit 1) instead of just auditing/annotating it. Offline-tested.
-- **Still ahead:** richer event surface (session/thread persistence).
+- **Done (session/thread persistence):** drivers accept an optional `session`
+  id (opencode `--session <id>`, claude `--resume <id>`) and
+  `providers.save_session`/`load_session` persist the provider-reported
+  session id (`session.updated`/text-event `session_id`) to a per-project
+  `.goline/session.json`. `--handover --continue` (plus `--session-file` to
+  override the path) resumes the previous thread instead of starting fresh;
+  provider mismatches, missing, or corrupt session files fail closed to a new
+  thread. Offline-tested (21 new cases in `test_sessions.py`; suite at **184
+  tests**).
 
 ## Stage 5 — AI-assisted coding — DONE
 
