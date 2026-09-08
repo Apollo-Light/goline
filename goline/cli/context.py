@@ -30,7 +30,8 @@ def _run(argv: list[str], cwd: str, timeout: int = 5) -> str | None:
         proc = subprocess.run(
             argv,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             cwd=cwd,
         )
@@ -41,6 +42,40 @@ def _run(argv: list[str], cwd: str, timeout: int = 5) -> str | None:
 
 def _git(cwd: str, *args: str) -> str | None:
     return _run(["git", *args], cwd)
+
+
+def _git_rev(cwd: str) -> "tuple[str | None, str | None]":
+    """Best-effort (branch, short_commit) from a SINGLE `git log` call.
+
+    Parses `git log -1 --oneline --decorate` output, e.g.
+      `8cfb23c897 (HEAD -> goline/cli-polish, fork/goline/cli-polish) msg`
+    Returns (None, None) when git cannot answer (unborn repo, not a repo,
+    git missing) so callers fail closed. On a detached HEAD the branch
+    reports as "HEAD" (parity with `git rev-parse --abbrev-ref HEAD`).
+
+    One spawn instead of two (rev-parse branch + rev-parse commit): git
+    process startup dominates engine-pack builds, so halving the spawns is
+    the cheap, measurable win.
+    """
+    out = _git(cwd, "log", "-1", "--oneline", "--decorate=short")
+    if not out:
+        return None, None
+    line = out.strip()
+    head = line.split(None, 1)
+    commit = head[0] if head else None
+    branch: str | None = None
+    open_p = line.find("(")
+    close_p = line.find(")")
+    if open_p != -1 and close_p > open_p:
+        for tok in line[open_p + 1 : close_p].split(","):
+            tok = tok.strip()
+            if tok.startswith("HEAD -> "):
+                branch = tok[len("HEAD -> ") :].strip()
+                break
+            if tok == "HEAD":
+                branch = "HEAD"
+                break
+    return branch, commit
 
 
 def _which(name: str) -> str | None:
@@ -87,14 +122,22 @@ def build_engine_context(root: str | None = None, use_git: bool = True) -> str:
     lines.append("# Goline engine context")
     lines.append(f"repo_root: {root}")
 
-    branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD") if use_git else None
-    commit = (_git(root, "rev-parse", "--short", "HEAD") if use_git else None)
+    branch: str | None = None
+    commit: str | None = None
+    if use_git:
+        branch, commit = _git_rev(root)
     clean = (_git(root, "status", "--porcelain") if use_git else None)
     if branch:
         lines.append(f"git_branch: {branch}")
     if commit:
         lines.append(f"git_commit: {commit}")
-    lines.append(f"git_clean: {'yes' if clean is None else 'no'}")
+    # Only claim "clean" when git actually answered; when git is unavailable
+    # (no branch and no commit) `clean is None` means "couldn't check", not a
+    # clean tree.
+    if use_git and (branch is not None or commit is not None):
+        lines.append(f"git_clean: {'yes' if clean is None else 'no'}")
+    else:
+        lines.append("git_clean: unknown")
 
     present = [m for m in _ENGINE_MARKERS if os.path.exists(os.path.join(root, m))]
     lines.append(f"engine_markers: {', '.join(present) or 'none'}")

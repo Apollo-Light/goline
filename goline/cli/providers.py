@@ -12,6 +12,9 @@ dispatching via each agent's native headless CLI mode:
 
 This is deliberately one-shot (dispatch a prompt, stream events) rather than
 a long-lived orchestration server — appropriate for our lightweight CLI.
+Session/thread persistence is opt-in: drivers accept an optional `session`
+id to resume a previous thread, and `load_session`/`save_session` persist
+that id across runs (a later `--continue` picks it up).
 
 Pure + offline-testable: every concrete driver takes an injectable executor
 so tests never spawn a process.
@@ -101,13 +104,16 @@ class ProviderDriver(Protocol):
         *,
         model: Optional[str] = None,
         workdir: Optional[str] = None,
+        session: Optional[str] = None,
         executor: Optional[Callable[[List[str], str], "subprocess_result_proto"]]
         = None,
     ) -> DispatchResult:
         """Send a prompt to the agent and return normalized events.
 
-        `executor` is an injectable `(argv, cwd) -> CompletedProcess` for
-        tests; default is a real subprocess runner.
+        `session` optionally resumes a previous provider thread (opencode:
+        `--session <id>`; claude: `--resume <id>`). `executor` is an
+        injectable `(argv, cwd) -> CompletedProcess` for tests; default is a
+        real subprocess runner.
         """
         ...
 
@@ -143,7 +149,14 @@ def _executable_argv(command: str, args: List[str]) -> List[str]:
 def _default_executor(argv: List[str], cwd: str) -> subprocess_result_proto:
     import subprocess
 
-    return subprocess.run(argv, capture_output=True, text=True, cwd=cwd, timeout=600)
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd,
+        timeout=600,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +236,7 @@ class OpenCodeDriver:
         *,
         model: Optional[str] = None,
         workdir: Optional[str] = None,
+        session: Optional[str] = None,
         executor: Optional[Callable[[List[str], str], subprocess_result_proto]] = None,
     ) -> DispatchResult:
         exe = executor or _default_executor
@@ -230,6 +244,8 @@ class OpenCodeDriver:
         argv = _executable_argv("opencode", ["run", "--format", "json"])
         if model:
             argv += ["--model", model]
+        if session:
+            argv += ["--session", session]
         # The prompt must precede --file: opencode treats a trailing positional
         # AFTER --file as another file path, not as inline message text.
         argv.append(prompt)
@@ -271,6 +287,7 @@ class ClaudeDriver:
         *,
         model: Optional[str] = None,
         workdir: Optional[str] = None,
+        session: Optional[str] = None,
         executor: Optional[Callable[[List[str], str], subprocess_result_proto]] = None,
     ) -> DispatchResult:
         exe = executor or _default_executor
@@ -278,6 +295,8 @@ class ClaudeDriver:
         argv = _executable_argv("claude", ["-p", "--output-format", "json"])
         if model:
             argv += ["--model", model]
+        if session:
+            argv += ["--resume", session]
         if context_file:
             with open(context_file, "r", encoding="utf-8") as fh:
                 prompt = f"<context>\n{fh.read()}\n</context>\n\n{prompt}"
@@ -333,6 +352,77 @@ def write_context_file(pack: str) -> str:
     return path
 
 
+@dataclass
+class SessionState:
+    """Persisted session identity for resuming a provider thread."""
+
+    provider: str
+    model: str
+    session_id: str
+    updated_at: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "session_id": self.session_id,
+            "updated_at": self.updated_at,
+        }
+
+
+def session_id_from_events(events: List[ProviderEvent]) -> Optional[str]:
+    """Return the first non-empty session id observed in a dispatch's events.
+
+    Providers (e.g. opencode's `session.updated` / `step_start` / text events)
+    carry `session_id` in event data when they run in a session; None when the
+    run never joined one (also the case for providers that do not report ids).
+    """
+    for e in events:
+        sid = e.data.get("session_id")
+        if isinstance(sid, str) and sid:
+            return sid
+    return None
+
+
+def load_session(path: str) -> Optional[SessionState]:
+    """Load persisted session state; missing/corrupt data -> None (fail closed)."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return None
+    provider = data.get("provider")
+    model = data.get("model")
+    session_id = data.get("session_id")
+    if not all(
+        isinstance(v, str) and v
+        for v in (provider, model, session_id)
+    ):
+        return None
+    return SessionState(
+        provider=provider,
+        model=model,
+        session_id=session_id,
+        updated_at=data.get("updated_at") or "",
+    )
+
+
+def save_session(path: str, state: SessionState) -> bool:
+    """Atomically persist session state; returns True on success."""
+    try:
+        fd, tmp = tempfile.mkstemp(
+            prefix="goline-session-",
+            suffix=".json",
+            dir=os.path.dirname(os.path.abspath(path)),
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(state.to_dict(), fh, indent=2)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
 def resolve_git_root(cwd: Optional[str] = None, git_exec=None) -> Optional[str]:
     """Find the git repository root for `cwd` (like t3code's workspaceMode=repo)."""
     import subprocess
@@ -340,7 +430,14 @@ def resolve_git_root(cwd: Optional[str] = None, git_exec=None) -> Optional[str]:
     cwd = os.path.abspath(cwd or os.getcwd())
     cmd = git_exec or ["git", "rev-parse", "--show-toplevel"]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=10)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+            timeout=10,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     out = (proc.stdout or "").strip()

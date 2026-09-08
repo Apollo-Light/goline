@@ -100,8 +100,22 @@ _DENY_PATTERNS = (
     re.compile(r"\b(shutdown|reboot|halt|poweroff|Stop-Computer|Restart-Computer)\b"),
     re.compile(r"\binit\s+(0|6)\b"),
     re.compile(r"\bchmod\s+[0-7]{3}\b"),
-    re.compile(r"\b>+\s*\S+(?:\s|$)|&&\s*>"),
+    # Shell redirection to a file (echo hi > x, python y > out.txt) is denied.
+    # The previous `>+` form required a preceding word boundary, which let a
+    # redirect after a space slip through AND wrongly caught harmless `2>&1`
+    # file-descriptor redirects (word boundary before `>`). This form catches
+    # ` > file` / `&& > file` while `(?!&1)` keeps `2>&1` allowed.
+    re.compile(r"(?:\s|^|;|&&)\>+\s*(?!&1)\S+"),
     re.compile(r"\b(powershell|cmd)\s+/c\s+(rm|del|format|rd|deltree|reset|clean|iwr|curl)"),
+    # Destructive one-liners from interpreters that are otherwise allow-listed
+    # (python/node are safe for script runs but `-c`/`-e` can perform arbitrary
+    # deletion). Matches the interpreter followed by a code-eval flag whose
+    # payload contains a destructive operation.
+    re.compile(
+        r"\b(python|python3|py|node)\b.*\s(-c|-e|-p|--eval|--print|-m)\s.*"
+        r"\b(remove|rmtree|rm\s+-rf|rmdir|unlink\b|delete|uninstall|shutil|"
+        r"os\.system|subprocess|rmsync|rmdirsync|unlinksync)\.?\b"
+    ),
 )
 
 # Read-only / inspect commands we permit by default. Anything not matching a
@@ -128,6 +142,26 @@ _ALLOW_EXECUTABLES = frozenset(
     }
 )
 
+# Commands that are neither auto-deny (destructive) nor auto-allow (safe reads
+# / known toolchain): they MUTATE the repo or the machine in a recoverable,
+# intentional way, so the safe default is to ASK a human for a review decision.
+# Destructive forms of these (force push, branch/tag -d, stash drop/clear,
+# ...) are caught by _DENY_PATTERNS first, so only the non-destructive
+# mutations land here.
+_ASK_PATTERNS = (
+    # Non-destructive git mutations.
+    re.compile(r"\bgit\s+(add|commit|push|stash|restore)\b"),
+    # `git branch` / `git tag` alone only list refs (read-only); with an
+    # operand they mutate. The `-d`/`-D` forms are denied further above.
+    re.compile(r"\bgit\s+(branch|tag)\s+"),
+    # Package-manager installs (network + machine/system mutation, but are
+    # ordinary intended work).
+    re.compile(r"\b(pip|pip3)\s+install\b"),
+    re.compile(r"\b(python|python3|py)\s+-m\s+pip\s+install\b"),
+    re.compile(r"\b(npm|pnpm|yarn)\s+(install|add)\b"),
+    re.compile(r"\bbrew\s+install\b"),
+)
+
 # ---------------------------------------------------------------------------
 # Decision types
 # ---------------------------------------------------------------------------
@@ -135,6 +169,7 @@ _ALLOW_EXECUTABLES = frozenset(
 DENY = "deny"
 ALLOW = "allow"
 ERROR = "error"
+ASK = "ask"  # neither auto-deny nor auto-allow: needs a human review decision.
 
 
 class Decision:
@@ -151,6 +186,12 @@ class Decision:
     def allowed(self) -> bool:
         return self.decision == ALLOW
 
+    @property
+    def needs_review(self) -> bool:
+        """True when the machine verdict needs a human review decision
+        (ASK, or DENY a human might want to override)."""
+        return self.decision in (ASK, DENY)
+
     def to_dict(self) -> dict:
         return {"decision": self.decision, "reason": self.reason, "command": self.command}
 
@@ -166,23 +207,43 @@ class Policy:
         self,
         custom_deny: "list[str] | None" = None,
         custom_allow: "list[str] | None" = None,
+        custom_ask: "list[str] | None" = None,
         deny_all: bool = False,
     ) -> None:
-        # Extra deny regexes (strings) add to the built-in set.
-        self._extra_deny = [re.compile(p) for p in (custom_deny or [])]
-        # Extra allow patterns as regexes on the normalized command.
-        self._extra_allow = [re.compile(p) for p in (custom_allow or [])]
+        # Extra rule regexes (strings) compiled once at construction. The
+        # combined deny/ask tuples are precomputed too, so `classify` never
+        # reallocates a fresh list per call (hot path, called per agent event
+        # and per `--gate`).
+        self._extra_deny = tuple(re.compile(p) for p in (custom_deny or []))
+        self._extra_allow = tuple(re.compile(p) for p in (custom_allow or []))
+        self._extra_ask = tuple(re.compile(p) for p in (custom_ask or []))
+        self._deny_pats = self._extra_deny + _DENY_PATTERNS
+        self._ask_pats = self._extra_ask + _ASK_PATTERNS
         self._deny_all = deny_all
 
     @staticmethod
     def _executable(command: str) -> str:
-        """Return the leading executable token, lowercased."""
+        """Return the leading executable token, lowercased.
+
+        Handles quoted executables that contain spaces (`"my tool" x`) which a
+        naive whitespace split would truncate to `my`. Paths are normalized to
+        their basename so `/usr/bin/rm x` still matches the `rm` deny entry.
+        """
         cmd = command.strip()
         if not cmd:
             return ""
-        # Handle `exe arg...` and `exe "arg with space"` first token.
-        tok = cmd.split(None, 1)[0].strip('"').strip("'")
-        return tok.lower()
+        if cmd[0] in ("'", '"'):
+            # Quoted first token: take up to the matching close quote.
+            quote = cmd[0]
+            end = cmd.find(quote, 1)
+            tok = cmd[1 : end if end != -1 else len(cmd)]
+        else:
+            tok = cmd.split(None, 1)[0]
+        head = tok.strip().strip('"').strip("'")
+        # Normalize a path to its basename so deny/allow sets still match
+        # (`/usr/bin/rm` -> `rm`).
+        base = os.path.basename(head.replace("\\", "/"))
+        return (base or head).lower()
 
     def classify(self, command: str) -> Decision:
         """Return an allow/deny decision for `command` (never executes it)."""
@@ -200,12 +261,19 @@ class Policy:
             return Decision(ALLOW, "explicit allow rule matched", cmd)
 
         # Check caller-provided deny rules, then built-in deny pattern set.
-        for pat in self._extra_deny + list(_DENY_PATTERNS):
+        for pat in self._deny_pats:
             if pat.search(norm):
                 return Decision(DENY, f"deny pattern: {pat.pattern}", cmd)
 
         if exe in _DENY_EXECUTABLES:
             return Decision(DENY, f"destructive executable: {exe}", cmd)
+
+        # Review bucket: mutating-but-recoverable commands get ASKED (custom
+        # operator patterns first, then the built-in ask set). Deny (above)
+        # already won for the destructive forms of these same commands.
+        for pat in self._ask_pats:
+            if pat.search(norm):
+                return Decision(ASK, f"review requested: {pat.pattern}", cmd)
 
         if exe == "git":
             # Already handled destructive git ops above; remaining git is
@@ -233,6 +301,7 @@ class AuditLog:
     def record(self, decision: Decision) -> None:
         entry = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "decided_by": "policy",
             **decision.to_dict(),
         }
         self._memory.append(entry)
@@ -250,6 +319,27 @@ class AuditLog:
     @property
     def entries(self) -> "list[dict]":
         return list(self._memory)
+
+
+class ApprovalLog(AuditLog):
+    """Append-only JSONL trail of HUMAN review decisions (decided_by=human).
+
+    Same append-only semantics and no-crash-on-write-failure behavior as
+    `AuditLog`, but each entry pairs the machine verdict with the human's
+    `approve` / `block` decision, so automated policy verdicts and human
+    overrides are never confused.
+    """
+
+    def record(self, decision: Decision, human_decision: str) -> None:
+        entry = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "decided_by": "human",
+            "human_decision": human_decision,
+            **decision.to_dict(),
+        }
+        self._memory.append(entry)
+        if self.path:
+            self._append_to_disk(entry)
 
 
 DEFAULT_DENY_NOTICE = (
@@ -276,6 +366,13 @@ _DENY_PATTERN_NOTICE = (
     "any executable NOT in the allow list (unknown tools are denied by default)",
 )
 
+_ASK_NOTICE = (
+    "Commands that mutate state in a recoverable way (git add/commit/push/"
+    "stash/restore, branch/tag with a name, pip/npm/yarn/brew install) are "
+    "neither auto-allowed nor auto-denied -- ASK the human for a review "
+    "decision before running them."
+)
+
 
 def guidance_notice() -> str:
     """Render the gate policy as a MANDATORY instruction block for an agent."""
@@ -287,5 +384,6 @@ def guidance_notice() -> str:
         "asking the human for explicit approval:\n"
         + f"- Denied executables: {exes}\n"
         + patterns
+        + f"- Review bucket: {_ASK_NOTICE}\n"
         + "If your next action would run such a command, STOP and ask first."
     )

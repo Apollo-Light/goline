@@ -52,10 +52,8 @@ class EngineContextTest(unittest.TestCase):
 
     def test_engine_context_reports_tools_and_git(self):
         def fake_git(cwd, *args):
-            if args[0] == "rev-parse" and args[1] == "--abbrev-ref":
-                return "myfork"
-            if args[0] == "rev-parse":
-                return "abc1234"
+            if args[0] == "log":
+                return "abc1234 (HEAD -> myfork, origin/myfork)"
             if args[0] == "status":
                 return " M version.py"
             return ""
@@ -72,12 +70,62 @@ class EngineContextTest(unittest.TestCase):
         self.assertIn("git_clean: no", pack)
         self.assertIn("python", pack)
 
+    def test_git_rev_fuses_branch_and_commit(self):
+        with mock.patch.object(ctx, "_git", return_value="abc1234 (HEAD -> main, origin/main) subj"):
+            self.assertEqual(ctx._git_rev("x"), ("main", "abc1234"))
+
+    def test_git_rev_detached_head_reports_head(self):
+        with mock.patch.object(ctx, "_git", return_value="abc1234 (HEAD, origin/main) subj"):
+            self.assertEqual(ctx._git_rev("x"), ("HEAD", "abc1234"))
+
+    def test_git_rev_no_commit_returns_none_pair(self):
+        with mock.patch.object(ctx, "_git", return_value=None):
+            self.assertEqual(ctx._git_rev("x"), (None, None))
+
     def test_git_failure_degrades_gracefully(self):
         with mock.patch.object(ctx, "_git", return_value=None), mock.patch.object(
             ctx, "_which", return_value=None
         ):
             pack = ctx.build_engine_context(root=self.root)
         self.assertNotIn("git_branch:", pack)
+
+    def test_git_unavailable_reports_clean_unknown(self):
+        # When git is unavailable (no branch, no commit) we must NOT claim the
+        # tree is clean -- "couldn't check" is not "yes".
+        with mock.patch.object(ctx, "_git", return_value=None), mock.patch.object(
+            ctx, "_which", return_value=None
+        ):
+            pack = ctx.build_engine_context(root=self.root)
+        self.assertIn("git_clean: unknown", pack)
+        self.assertNotIn("git_clean: yes", pack)
+
+    def test_git_clean_reported_only_when_git_answers(self):
+        def fake_git(cwd, *args):
+            if args[0] == "log":
+                return "abc1234 (HEAD -> main)"
+            if args[0] == "status":
+                return None  # clean tree
+            return ""
+
+        with mock.patch.object(ctx, "_git", side_effect=fake_git), mock.patch.object(
+            ctx, "_which", return_value=None
+        ):
+            pack = ctx.build_engine_context(root=self.root)
+        self.assertIn("git_clean: yes", pack)
+
+    def test_git_dirty_reported_no_when_status_nonempty(self):
+        def fake_git(cwd, *args):
+            if args[0] == "log":
+                return "abc1234 (HEAD -> main)"
+            if args[0] == "status":
+                return " M version.py"
+            return ""
+
+        with mock.patch.object(ctx, "_git", side_effect=fake_git), mock.patch.object(
+            ctx, "_which", return_value=None
+        ):
+            pack = ctx.build_engine_context(root=self.root)
+        self.assertIn("git_clean: no", pack)
 
 
 class GameContextTest(unittest.TestCase):

@@ -1,9 +1,12 @@
 # Goline — Planned Architecture
 
-> **Status: PLANNED — NOT IMPLEMENTED.** This document describes the intended
-> target architecture for Goline. None of the layers below are implemented
-> yet, and no upstream Godot functionality is modified until a roadmap stage
-> authorizes it.
+> **Status: FOUNDATION + CLI IMPLEMENTED; §2 has a stock-binary addon
+> reference.** The layers below mark their own status; §4, §5, §6, §7, §8,
+> and §9 have a working CLI foundation via `goline/cli/` (pure stdlib,
+> offline-testable). §2 (editor UI) has a reference addon
+> (`goline/examples/sample_game/addons/`) that works in a *stock* editor
+> binary; an engine-embedded build remains an optional follow-up. No upstream
+> Godot functionality is modified until a roadmap stage authorizes it.
 
 The architecture organizes Goline into layered, clearly separated areas that
 build on top of the unmodified Godot Engine rather than replacing it.
@@ -29,6 +32,9 @@ The editor-facing surface where Goline-specific UI and workflows appear.
   editor.
 - Goline panels, docks, and toolbars for AI-assisted workflows.
 - Opt-in; upstream editor behavior remains intact.
+- **Reference implementation:** `goline/examples/sample_game/addons/goline_ai/`
+  — a GDScript `EditorPlugin` (stock-binary compatible, no engine build) that
+  adds a **Goline AI** dock driving `goline_cli` (explain/edit/debug).
 
 ## 3. AI Agent Integration Layer
 
@@ -58,6 +64,14 @@ Provides AI agents with accurate, scoped awareness of the project.
 - Indexes / queries the project to answer "what is here" reliably.
 - Scopes context to the current task to keep prompts accurate.
 
+*Status: CLI foundation.* Level packs live in `goline/cli/context.py` (engine
+`--context engine`, game `--context game --project <dir>`); a file-scoped
+pack lives in `goline/cli/workflows.py` (`build_file_context`, exposed via
+`--context file` / `--print-context file`): bounded file content, same-dir
+siblings, cross-file references via a bounded scan rooted at the enclosing
+`goline/` package (never the whole engine tree), git last-change, and the
+embedded permission policy.
+
 ## 6. Code/Script Assistance
 
 AI-assisted code and script generation for the engine and GDScript/C#.
@@ -66,6 +80,13 @@ AI-assisted code and script generation for the engine and GDScript/C#.
 - Suggestions that integrate with the editor workflow.
 - Follows the AI development rules (small, reviewable, behavioral).
 
+*Status: CLI foundation.* `--code <file> --instruction "..."` in
+`goline/cli/workflows.py` assembles a file-scoped context pack, dispatches a
+strict unified-diff-only edit prompt through the provider SPI, runs the
+permission gate/guard on emitted events, validates the returned diff, and
+prints it for **human review and manual apply** (never auto-applied).
+`--explain <file>` dispatches a file-scoped explain prompt, closing the loop.
+
 ## 7. AI Debugging
 
 AI-assisted debugging support.
@@ -73,6 +94,15 @@ AI-assisted debugging support.
 - Help analyze build failures, runtime errors, and regressions.
 - Surface diagnostics and candidate explanations to the developer.
 - Preserves test integrity; never removes functionality to pass a build.
+
+*Status: CLI foundation.* `--debug "<error/backtrace>"` in
+`goline/cli/debugging.py` builds a bounded debug context pack (raw
+diagnostics + the referenced source file extracted from the backtrace + git
+metadata + permission policy), dispatches a root-cause investigation prompt
+through the provider SPI, and prints a diagnosis. **Diagnose-only by
+design**: the model ranks causes and sketches fixes as text only — it never
+modifies files (the safety mirror of §6's --code). Audit/`--guard` apply as
+in handover; diagnostics can be piped via stdin.
 
 ## 8. Tool/Command Execution
 
@@ -83,7 +113,9 @@ Infrastructure for AI agents to act on the repository.
 - Commands are invoked only within defined permissions.
 
 *Status: CLI foundation.* Goline shells out via `goline/cli/goline_cli.py`
-(discovery + launch); the permission gate is `goline/cli/policy.py`.
+(discovery + launch); the permission gate is `goline/cli/policy.py`. On
+`--handover` the gate is enforced with `--guard` (fail-fast, exit 2 on a
+denied command the agent emits) and `--review` (human veto on ask/deny).
 
 ## 9. Security and Permission Controls
 
@@ -93,10 +125,20 @@ The governance layer for all agent actions.
 - Restriction of destructive or out-of-scope operations.
 - Audit trail and review of agent-driven changes.
 
-*Status: CLI foundation.* `Policy.classify()` gives allow/deny/error with a
-reason (default deny-destructive); `AuditLog` is an append-only JSONL trail.
-Gating is currently an inspection step (`--gate`) and is not yet enforced
-inline inside the agent launch prompt.
+*Status: CLI foundation.* `Policy.classify()` gives allow/ask/deny/error with
+a reason (default deny-destructive, deny winning over ask). `AuditLog` is an
+append-only JSONL trail of machine verdicts (`decided_by: policy`);
+`ApprovalLog` shares the format for human verdicts (`decided_by: human`,
+`human_decision: approve|block`). The deny set is hardened against
+interpreter one-liners (`python -c`/`node -e` destruction), file redirection
+(`echo > x`), and path/quote tokenization pitfalls; `2>&1` descriptor
+redirects stay allowed. Gating is enforced at handover time via `--guard`
+(exit 2 on a denied agent command), in addition to the inspection step
+(`--gate`: allow/ask/deny → exit 0/2/1) and the `--audit` JSONL hook. The
+`ask` tier (non-destructive `git` mutations, package installs) closes the
+human-in-the-loop: `--handover --review` prompts per non-allowed verdict and
+`--review <audit.jsonl>` replays a trail offline, with `--approval-file`
+pre-seeding known decisions.
 
 ---
 

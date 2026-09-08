@@ -1,0 +1,1 @@
+"""Goline CLI performance harness (Stage 9)."""
