@@ -3,9 +3,10 @@
 The staged plan for turning the Godot Engine fork into **Goline**, an
 AI-assisted game development engine.
 
-> **Status:** Stages 0, 1, 3, 4 (CLI seams), 5, 6, 7, 8, and 9 are
-> implemented. Stage 2 (in-editor UI) is deferred. No upstream Godot code
-> is modified before a stage explicitly authorizes it.
+> **Status: SHIPPED as v0.1** — all Stages 0–9 DONE, merged via PR #2
+> (`goline/cli-polish` → `master`, tag `goline-v0.1`). No upstream Godot
+> code was modified; all Goline code lives under `goline/`, `docs/goline/`,
+> and the sample project.
 
 ---
 
